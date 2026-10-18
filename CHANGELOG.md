@@ -12,44 +12,36 @@ the notes of the version's GitHub Release.
 
 ### Added
 
-- A working example of scene triggers, scene actions and dashboard widgets
-  (Gladys 5.1.0 or later).
-- `CHANGELOG.md`, rolled by the Release workflow.
-- A GitHub Release for every version, with its changelog section as notes: the
-  Gladys Supervision page links each version to the repository's releases.
-- CI runs the tests on Node 22 and 24, and builds the Docker image.
-- Dependabot keeps the npm dependencies and the GitHub Actions up to date.
-- `SECURITY.md` (how to report a vulnerability) and `CLAUDE.md` (project rules
-  for contributors and coding assistants).
-- Manifest tests: `version` matches `package.json`, `docker_image` is tagged
-  with it, descriptions hold 10 to 100 characters, placeholders are
-  multi-language objects.
-- The latitude and longitude fields show an example value as placeholder.
+- Local connection to a Comelit SimpleHome Serial Bridge over HTTP, with the
+  protocol of aiocomelit 3.0.0: login with the bridge PIN, lights, plugs,
+  shutters (as `shutter`, never a switch) and thermostats (temperature and
+  setpoint), read at an interval (10 s by default).
+- The Vedo alarm, through the bridge or on a Vedo IP of its own: one device
+  per area (state, alarm, tamper, arm total / partial P1 / partial P1 + P2 and
+  disarm buttons) and per zone (open, alarm, excluded, tamper; kind set in
+  the configuration). The new Vedo firmware (actions by POST) is detected.
+- Intercom doors through the Comelit intercom bridge (ICONA protocol, port
+  64100, ported from comelit-client 3.0.0): one "Open" button per door of
+  its address book.
+- Scene triggers `alarm_triggered`, `armed`, `disarmed` (Gladys 5.1.0 or
+  later).
+- "Test the connection" button.
+- Docs in French and English, cover image.
 
-### Changed
+### Security
 
-- Node.js 22 or later is required (Node 20 is end-of-life).
-- Integration SDK 0.15.0. The tests now run against the fake Gladys of the
-  SDK, which refuses the payloads Gladys refuses.
-- The refresh interval is one minute minimum, the fastest Gladys polls a
-  device. The plug's power is only sent when it changes, and every 30
-  minutes otherwise.
+- Arming, disarming, setting a setpoint and opening a door are four options,
+  all off by default; each is checked when the command arrives, in the
+  queue, after the fresh read and right before the write.
+- Alarm, setpoint and shutter-stop commands are decided on the state read
+  from the bridge right before them; one command at a time per host; never
+  sent after 3.5 s; anything after the write without a clear answer is "sent,
+  without confirmation" (with a read back, and a guard for the shutter stop
+  and the doors), only an HTTP 4xx is a refusal.
+- One session per host, one request at a time, growing waits between
+  sessions; a refused PIN (bridge, alarm) or token (intercom) stops its
+  session with no new try, persisted in `/data` without the secret.
+- The PINs and the token are secret fields, never logged; the answers of the
+  bridge and of the intercom are bounded and parsed without prototype keys.
 
-### Fixed
-
-- Gladys refused the devices of the Discovery tab: the weather station and
-  the plug declared their poll frequency in seconds instead of one of the
-  values Gladys accepts, and were never polled. They now poll every minute,
-  and the readings follow the refresh interval of the configuration.
-
-- The release commit no longer fails `npm run format:check`: the Release
-  workflow updates the manifest `version` and `docker_image` in place instead
-  of re-printing the whole file with `jq`.
-- The integration can write to `/data`: the image creates the directory owned
-  by the `node` user, a new Docker volume was owned by root.
-- A sub-container running the integration's own image follows it to the new
-  tag at each release, as well as in the manifest of the build summary: it kept
-  the previous tag, which may not exist on the registry. Sub-containers on a
-  third-party image (a broker, a database...) keep theirs.
-
-[Unreleased]: https://github.com/GladysAssistant/integration-template-js/commits/main
+[Unreleased]: https://github.com/LM1LC3N7/gladys-comelit/commits/main

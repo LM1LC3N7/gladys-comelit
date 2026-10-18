@@ -16,8 +16,8 @@ its only runtime dependency. It started from the official JavaScript template.
 ```bash
 npm install
 npm test                                  # node --test, the built-in runner
-node --test test/devices.test.js          # one file
-node --test --test-name-pattern "plug"    # tests whose name matches
+node --test test/app.test.js              # one file
+node --test --test-name-pattern "shutter" # tests whose name matches
 npm run lint                              # ESLint
 npm run format:check                      # Prettier, as the CI runs it
 npm run format                            # Prettier, fix in place
@@ -32,17 +32,33 @@ pushing.
 
 ```
 index.js                          SDK wiring only: handlers registered before connect()
-src/devices/index.js              registry of the device blueprints + dispatch helpers
-src/devices/<type>.js             one device type per file (buildDevice, onPoll, onSetValue...)
-src/scenes.js                     scene action handlers (manifest `scene_actions`)
-src/widgets.js                    dashboard widget handlers (manifest `widgets`)
-src/config.js                     DEFAULT_CONFIG (mirrors the manifest defaults) + normalization
-src/weather.js                    example driver (Open-Meteo)
+src/handlers.js                   the SDK handlers, shared with the tests
+src/app.js                        ComelitApp: lifecycle, model, devices, states, events, commands
+src/comelit/pages.js              the bridge and Vedo JSON pages (aiocomelit api.py, const.py)
+src/comelit/client.js             one HTTP session per host: login, discovery, polling, actions
+src/comelit/icona.js              the intercom bridge (ICONA, comelit-client): frames, doors
+src/http.js                       one HTTP request (node:http), "sent or not" errors
+src/json.js                       JSON parsed without prototype keys
+src/devices.js                    model -> Gladys devices and states (pure)
+src/publisher.js                  states and scene events under the Gladys rate limits
+src/store.js                      /data: the stops after a refused PIN or token
+src/config.js                     DEFAULTS (mirror the manifest defaults) + normalization
+src/constants.js, src/i18n.js     keys, timings, limits; French and English texts
 gladys-assistant-integration.json manifest: name, config_schema, actions, image...
 docs/en.md, docs/fr.md            user documentation, re-hosted by Gladys (mandatory)
-test/                             node --test, against the SDK's fake Gladys (integration-sdk/testing)
+test/                             node --test, the SDK's fake Gladys + test/helpers/fakeComelit.js
 .github/scripts/release.mjs       release helpers (manifest bump, changelog), tested in test/
 ```
+
+Safety rules of this integration (see TODO.md "Decisions"): setting a
+thermostat, arming, disarming and opening a door stay off by default, each
+option checked again right before the write; alarm and door commands are
+push buttons, never switches; shutters are `shutter`, never switches; a
+command decides on the state read from the bridge just before it, one at a
+time per host; a command that may have left is never reported "not sent";
+a refused PIN or token stops its session, never a loop; the acks never wait
+for a publication; the PINs and the token are never logged nor written to
+`/data`.
 
 ## Rules
 
@@ -68,9 +84,11 @@ test/                             node --test, against the SDK's fake Gladys (in
   older cores do not know needs a higher `gladys_version` minimum
   (`categories`: 4.86.0; `widgets`, `scene_triggers`, `scene_actions`,
   `type: "provider"`: 5.1.0). `test/manifest.test.js` ties the manifest to the
-  code (defaults, action, scene and widget handlers): change both sides
-  together.
+  code (defaults, action and scene handlers): change both sides together.
 - **User-facing text** is bilingual (English and French): action messages,
-  manifest texts, and `docs/en.md` / `docs/fr.md`, kept in sync.
+  manifest texts, and `docs/en.md` / `docs/fr.md`, kept in sync. A secret
+  field is "kept by Gladys in its database, never shown again": Gladys
+  stores it in clear, never say otherwise.
 - **Style.** Prettier formats, ESLint catches mistakes. Comments explain why,
-  in English. Tests never touch the network.
+  in English. Tests never touch the network (`test/http.test.js` uses a
+  server on the loopback interface only).

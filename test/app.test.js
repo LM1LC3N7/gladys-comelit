@@ -111,8 +111,8 @@ test('start: devices, categories, states, status', async (t) => {
       [ids('zone', 0).device, 'Porte entrée'],
       [ids('zone', 1).device, 'Couloir'],
       [ids('zone', 2).device, 'Garage'],
-      [ids('door', 1).device, 'Portail'],
-      [ids('door', 2).device, 'Porte immeuble'],
+      [ids('door', 'SB100001-1').device, 'Porte immeuble'],
+      [ids('door', 'SB100001-2').device, 'Portail'],
     ],
     'the dehumidifier only is left out',
   );
@@ -517,14 +517,14 @@ test('door: off by default; when allowed, decided on the fresh configuration, gu
   await up(ctx);
   await until(() => ctx.app.doorState === 'ok');
   const connections = ctx.intercom.connections;
-  const off = await ctx.set('door', 1, 'open', 1);
+  const off = await ctx.set('door', 'SB100001-2', 'open', 1);
   assert.match(off.error, /Opening doors is disabled/);
   assert.equal(ctx.intercom.connections, connections, 'not even connected');
   await ctx.config({ ...config, allow_door: true });
   await until(() => ctx.app.doorState === 'ok');
   await ctx.app.queues.get('door');
   ctx.intercom.received = [];
-  const ack = await ctx.set('door', 1, 'open', 1);
+  const ack = await ctx.set('door', 'SB100001-2', 'open', 1);
   // Every frame written, still no confirmation from the bridge.
   assert.equal(ack.success, false);
   assert.match(ack.error, /Sent, without confirmation/);
@@ -547,7 +547,7 @@ test('door: off by default; when allowed, decided on the fresh configuration, gu
     'bin 005c8b2c',
     'bin 205c8b2c',
   ]);
-  const again = await ctx.set('door', 1, 'open', 1);
+  const again = await ctx.set('door', 'SB100001-2', 'open', 1);
   assert.match(again.error, /just opened/);
   // Switched off during the sequence: stopped before the first opening frame.
   ctx.app.doorGuards.clear();
@@ -555,7 +555,7 @@ test('door: off by default; when allowed, decided on the fresh configuration, gu
   ctx.intercom.onJson = (message) => {
     if (message.message === 'server-info') ctx.app.config = { ...ctx.app.config, allowDoor: false };
   };
-  const withdrawn = await ctx.set('door', 2, 'open', 1);
+  const withdrawn = await ctx.set('door', 'SB100001-1', 'open', 1);
   assert.match(withdrawn.error, /Opening doors is disabled/);
   assert.ok(!ctx.intercom.log.some((l) => l.startsWith('bin')), 'no frame of the opening');
 });
@@ -639,7 +639,7 @@ test('"Test the connection" never brings back an option switched off', async (t)
   assert.equal(commands(ctx).length, 0);
 });
 
-test('a door given to another output in the intercom: refused, nothing written, read again', async (t) => {
+test('B2: a slot of the intercom book given to another target: the old device opens nothing', async (t) => {
   const config = {
     intercom_host: '192.0.2.11',
     intercom_token: 'icona-token-0123456789',
@@ -649,22 +649,75 @@ test('a door given to another output in the intercom: refused, nothing written, 
   await up(ctx);
   await until(() => ctx.app.doorState === 'ok');
   await ctx.app.chain;
-  const params = ctx.device(ctx.ids('door', 1).device).params;
-  assert.deepEqual(
-    params.filter((p) => p.name !== 'door'),
-    [
-      { name: 'apt_address', value: 'SB100001' },
-      { name: 'output_index', value: '2' },
-    ],
-  );
+  const old = ctx.device(ctx.ids('door', 'SB100001-2').device);
+  assert.ok(old, 'the id names the target: address and output');
+  // The same slot (id 1) now opens output 3.
   ctx.intercom.configuration.vip['user-parameters']['opendoor-address-book'][0]['output-index'] = 3;
   ctx.intercom.received = [];
-  const ack = await ctx.set('door', 1, 'open', 1);
-  assert.match(ack.error, /intercom configuration changed/);
-  assert.ok(!ctx.intercom.log.some((l) => l.startsWith('bin')), 'no frame of the opening');
-  await until(() => ctx.app.model.doors.get(1).outputIndex === 3);
+  const press = () =>
+    ctx.gladys.fake.setValue(
+      old,
+      old.features.find((f) => f.external_id.endsWith(':open')),
+      1,
+    );
+  const first = await press();
+  assert.match(first.error, /no longer in the intercom configuration/);
+  await until(() => ctx.app.model.doors.has('SB100001-3'));
+  await ctx.app.chain;
+  const second = await press();
+  assert.match(second.error, /no longer in the intercom configuration/);
+  assert.ok(!ctx.intercom.log.some((l) => l.startsWith('bin')), 'no frame to any target');
+  assert.ok(ctx.device(ctx.ids('door', 'SB100001-3').device), 'a new device for the new target');
 });
 
+test('S: "stop everything" while a shutter reaches its end: no reverse command', async (t) => {
+  const bridge = new FakeBridge();
+  bridge.objects.shutter = { desc: ['Volet 1', 'Volet 2'], status: [2, 2] };
+  const ctx = await setup(t, { bridge });
+  await up(ctx);
+  // While the first stop goes, the second shutter arrives at its end.
+  bridge.hook = async (entry) => {
+    if (entry.path.includes('action.cgi') && entry.query.num1 === '0') {
+      bridge.hook = undefined;
+      bridge.objects.shutter.status[1] = 0;
+    }
+    return undefined;
+  };
+  const acks = await Promise.all([
+    ctx.set('shutter', 0, 'state', 0),
+    ctx.set('shutter', 1, 'state', 0),
+  ]);
+  assert.deepEqual(
+    acks.map((a) => a.success),
+    [true, true],
+  );
+  assert.deepEqual(
+    commands(ctx),
+    ['GET user/action.cgi?type=shutter&num1=0'],
+    'nothing to shutter 2',
+  );
+});
+
+test('A3: a start queued behind a newer save uses the newer configuration', async (t) => {
+  const ctx = await setup(t, { config: { allow_arm: false } });
+  await up(ctx);
+  const first = ctx.app.configUpdated({ ...BASE, allow_arm: true, poll_interval: 20 });
+  const second = ctx.app.configUpdated({ ...BASE, allow_arm: false });
+  await Promise.all([first, second]);
+  await ctx.app.starting;
+  assert.equal(ctx.app.config.allowArm, false);
+  assert.equal(ctx.app.rawConfig.allow_arm, false);
+});
+
+test('"Test the connection" never starts on an empty configuration', async (t) => {
+  const ctx = await setup(t);
+  await up(ctx);
+  ctx.gladys.getConfig = async () => ({});
+  const result = await ctx.gladys.fake.action('test_connection');
+  assert.equal(result.success, false);
+  assert.match(result.error, /could not be read/);
+  assert.equal(ctx.app.bridge.connected, true, 'the running session is kept');
+});
 test('alarm: a 200 alone, or a state read that did not change, is no confirmation', async (t) => {
   const ctx = await setup(t, { config: { allow_arm: true, allow_disarm: true } });
   await up(ctx);

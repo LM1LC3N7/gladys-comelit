@@ -103,12 +103,14 @@ included), waits for the connections and tells what was found.
   refusal of the bridge (HTTP 4xx) is reported "refused".
 - For the alarm, the HTTP answer proves nothing: the older Vedo firmware
   answers 200 and the new one 404 to every action (aiocomelit notes it). The
-  integration reads the state at once and reports a success only when the
-  state read **has changed** and shows the result (disarmed: no alarm nor
+  integration reads the state at once, then every 500 ms until 4.5 s, and
+  reports a success only when the state read **has changed** and shows the result (disarmed: no alarm nor
   delay running any more); otherwise "sent, without confirmation".
-- Several shutter or thermostat commands arriving together ("close
-  everything") share one read, made after they arrived, as long as no
-  command went to that shutter since. The bridge calls follow one another
+- Several shutter openings, closings or setpoints arriving together ("close
+  everything") share one read, made after they arrived and at most one
+  second old when deciding, as long as no command went to that object since.
+  A shutter **stop** is always decided on a read of its own, made right
+  before: a shutter that reached its end gets nothing. The bridge calls follow one another
   without a pause; only the Vedo calls keep 250 ms apart, and the thermostats
   1.5 s, as aiocomelit does.
 - During a "close everything", a shutter that is opening is refused (the
@@ -134,10 +136,11 @@ risk, and test it at home.**
 - The doors are read from the address book of the intercom bridge
   ("opendoor"). Actuators and entrances are not supported in this version.
 - Each opening opens a short connection and reads the configuration of the
-  bridge again: the door must be in it, with the same address and output as
-  at the discovery (kept in the parameters of the device). Otherwise: refused
-  with "the intercom configuration changed, scan again", no frame, and the
-  doors are read again. The integration then checks the option and the
+  bridge again. Each door device is tied to its target (address and output,
+  in its id): if that target is no longer in the book, the door is refused as
+  missing ("scan again"), no frame, and the doors are read again. A slot of
+  the book given to another target becomes a new device; the old one opens
+  nothing. The integration then checks the option and the
   deadline right before the first opening frame, and writes the frames of
   comelit-client.
 - The bridge gives no confirmation: **Gladys always answers "sent, without

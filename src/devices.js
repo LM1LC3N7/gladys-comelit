@@ -14,7 +14,8 @@
 // - `ext:<sel>:zone:<i>`: one state feature keyed by the zone kind
 //   (`:opening`, `:motion`, `:smoke` or `:leak`), `alarm`, `excluded`,
 //   `tamper`;
-// - `ext:<sel>:door:<id>`: the `open` BUTTON (intercom).
+// - `ext:<sel>:door:<apt-address>-<output>`: the `open` BUTTON (intercom),
+//   keyed by the target it opens.
 //
 // No alarm or door command is a switch or a binary: a "turn everything off"
 // (voice assistants, HomeKit, scenes on switches) must never reach them.
@@ -129,13 +130,25 @@ export const ids = {
 
 const KINDS = ['light', 'plug', 'shutter', 'thermostat', 'area', 'zone', 'door'];
 
-/** `ext:sel:area:0:arm-total` -> { kind: 'area', index: 0, key: 'arm-total' }. */
+/**
+ * `ext:sel:area:0:arm-total` -> { kind: 'area', index: 0, key: 'arm-total' };
+ * `ext:sel:door:SB100001-2:open` -> { kind: 'door', door: 'SB100001-2', key: 'open' }.
+ */
 export function parseFeatureId(externalId) {
-  const match = /:([a-z]+):(\d{1,4}):([a-z0-9-]+)$/.exec(String(externalId ?? ''));
-  if (!match || !KINDS.includes(match[1])) return undefined;
+  const text = String(externalId ?? '');
+  const door = /:door:([0-9A-Za-z]{1,16}-\d{1,3}):([a-z]+)$/.exec(text);
+  if (door) return { kind: 'door', door: door[1], key: door[2] };
+  const match = /:([a-z]+):(\d{1,4}):([a-z0-9-]+)$/.exec(text);
+  if (!match || !KINDS.includes(match[1]) || match[1] === 'door') return undefined;
   return { kind: match[1], index: Number(match[2]), key: match[3] };
 }
 
+/**
+ * The id of a door: the target it opens (apartment address and output of
+ * the intercom address book), never the slot of the book. A slot given to
+ * another target is another device; the old one is refused as missing.
+ */
+export const doorKey = (door) => `${door.aptAddress}-${door.outputIndex}`;
 const feature = (deviceIds, key, name, definition) => ({
   name,
   external_id: deviceIds.feature(key),
@@ -285,20 +298,14 @@ export function buildDevices(gladys, config, model, created = gladys.devices) {
       });
     }
   }
-  for (const [id, door] of sorted(model.doors)) {
-    const doorIds = ids.object(gladys, 'door', id);
+  const doors = [...(model.doors ?? new Map()).entries()].sort(([a], [b]) => a.localeCompare(b));
+  for (const [key, door] of doors) {
+    const doorIds = ids.object(gladys, 'door', key);
     devices.push({
-      name: door.name || word(DEVICE_NAMES.door, language)(id),
+      name: door.name || word(DEVICE_NAMES.door, language)(key),
       external_id: doorIds.device,
       should_poll: false,
-      // What the door is in the intercom address book: checked again at each opening.
-      params: [
-        { name: 'door', value: String(id) },
-        ...(door.aptAddress ? [{ name: 'apt_address', value: door.aptAddress }] : []),
-        ...(door.outputIndex !== undefined
-          ? [{ name: 'output_index', value: String(door.outputIndex) }]
-          : []),
-      ],
+      params: [{ name: 'door', value: key }],
       features: [feature(doorIds, 'open', word(FEATURE_NAMES.open, language), button)],
     });
   }

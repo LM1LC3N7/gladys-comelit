@@ -242,7 +242,7 @@ export function parseConfiguration(json) {
       !Number.isInteger(output) ||
       output < 0 ||
       output > 255 ||
-      doors.some((d) => d.id === id)
+      doors.some((d) => d.id === id || (d.aptAddress === address && d.outputIndex === output))
     ) {
       continue;
     }
@@ -429,8 +429,7 @@ export async function openDoor({
   host,
   port,
   token,
-  doorId,
-  verify,
+  target,
   ready,
   onSent,
   connect,
@@ -449,12 +448,14 @@ export async function openDoor({
     const config = parseConfiguration(
       await session.json('UCFG', (id) => frames.getConfig(id, 'all'), { close: false }),
     );
-    const door = config.doors.find((d) => d.id === doorId);
+    // The target itself (address and output), never a slot of the book: a
+    // slot given to another door is not this one.
+    const door = config.doors.find(
+      (d) => d.aptAddress === target.aptAddress && d.outputIndex === target.outputIndex,
+    );
     if (!door) {
-      throw new ComelitError(`Intercom: door ${doorId} not in its configuration`, 'missing');
+      throw new ComelitError('Intercom: this door is not in its configuration any more', 'missing');
     }
-    // The entry read now must still be the door the device was made for.
-    verify?.(door);
     await session.json('INFO', (id) => frames.serverInfo(id));
     ready();
     const ctpp = await session.channel('CTPP', vipAddress(config.vip));

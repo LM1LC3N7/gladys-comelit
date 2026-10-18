@@ -110,12 +110,15 @@ compris), attend les connexions et indique ce qui a été trouvé.
   « refusé ».
 - Pour l'alarme, la réponse HTTP ne prouve rien : l'ancien micrologiciel de
   la Vedo répond 200 et le nouveau 404 à chaque action (aiocomelit le note).
-  L'intégration relit donc l'état aussitôt et n'annonce la réussite que si
-  l'état lu **a changé** et montre le résultat (désarmé : plus d'alarme ni de
+  L'intégration relit donc l'état aussitôt, puis toutes les 500 ms jusqu'à
+  4,5 s, et n'annonce la réussite que si l'état lu **a changé** et montre le résultat (désarmé : plus d'alarme ni de
   délai en cours) ; sinon « envoyée, sans confirmation ».
-- Plusieurs commandes de volets ou de thermostats arrivées ensemble (« tout
-  fermer ») partagent une même relecture, faite après leur arrivée, tant
-  qu'aucune commande n'est partie vers ce volet depuis. Les appels au pont
+- Plusieurs ouvertures, fermetures de volets ou consignes arrivées ensemble
+  (« tout fermer ») partagent une même relecture, faite après leur arrivée et
+  vieille d'une seconde au plus au moment de décider, tant qu'aucune commande
+  n'est partie vers cet objet depuis. Un **arrêt** de volet se décide toujours
+  sur une lecture à lui, faite juste avant : un volet arrivé en fin de course
+  ne reçoit rien. Les appels au pont
   s'enchaînent sans pause ; seuls les appels à la Vedo gardent 250 ms entre
   eux, et les thermostats 1,5 s, comme aiocomelit.
 - Pendant un « tout fermer », un volet qui est en train de s'ouvrir est
@@ -145,10 +148,11 @@ ouverte. Ne l'activez que si vous acceptez ce risque, et testez en présence.**
   (« opendoor »). Les actionneurs et les entrées ne sont pas pris en charge
   dans cette version.
 - Chaque ouverture ouvre une courte connexion et relit la configuration du
-  pont : la porte doit y être, avec la même adresse et la même sortie qu'à la
-  découverte (gardées dans les paramètres de l'appareil). Sinon : refus
-  « configuration de l'interphone changée, relancez une recherche », aucune
-  trame, et les portes sont relues. L'intégration vérifie ensuite l'option et
+  pont. Chaque appareil porte est lié à sa cible (adresse et sortie, dans son
+  identifiant) : si cette cible n'est plus dans le carnet, la porte est
+  refusée comme absente (« relancez une recherche »), aucune trame, et les
+  portes sont relues. Une case du carnet donnée à une autre cible devient un
+  nouvel appareil ; l'ancien n'ouvre plus rien. L'intégration vérifie ensuite l'option et
   le délai juste avant la première trame d'ouverture, puis écrit les trames
   de comelit-client.
 - Le pont ne donne aucune confirmation : **Gladys répond toujours « envoyée,

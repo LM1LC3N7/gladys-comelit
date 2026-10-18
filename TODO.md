@@ -89,8 +89,8 @@ up to date at the end of every milestone.
   between two Vedo calls only, 1.5 s between two thermostat commands.
 - **Ids**: `bridge:comelit`, `vedo:comelit`, `light:<i>`, `plug:<i>`,
   `shutter:<i>`, `thermostat:<i>`, `area:<i>`, `zone:<i>` with the 0-based
-  index the bridge gives (as Home Assistant), `door:<id>` with the id of the
-  intercom address book. The user sees numbers from 1 (area 1 = index 0):
+  index the bridge gives (as Home Assistant), `door:<apt-address>-<output>`,
+  the target the door opens (never the slot of the intercom address book). The user sees numbers from 1 (area 1 = index 0):
   default names, `zone_kinds`, scene trigger `area` and `zone`.
 - **Device kinds**: lights `light/binary`, plugs (`other`) `switch/binary`,
   shutters `shutter/state` (-1 / 0 / 1, the core COVER_STATE; the bridge's
@@ -205,3 +205,28 @@ up to date at the end of every milestone.
   `setValue`; **M9** open / close refused while a stop guard is up; **M10** a
   door missing from the configuration read again triggers a new reading of
   the doors.
+
+## Decisions after the approval round 1 (2026-10-18)
+
+- **B (replaces the params check)**: Gladys rewrites the params of a device
+  (`upsertDeviceParams`), so they cannot hold what a door was made for. The
+  external id is the target: `door:<apt-address>-<output-index>`;
+  `parseFeatureId` reads it, the opening looks for that address and output
+  in the configuration read in the same session. A slot of the book given to
+  another target is a new device; the old one is refused as missing, no
+  frame, and the doors are read again (test B2).
+- **S - shutter stop**: always decided on a `fresh()` read of its own, made
+  right before; the shared read stays for open, close and setpoints, and is
+  used at most 1 s old when deciding (test S: "stop everything" while a
+  shutter reaches its end, no reverse command).
+- **Starts**: `startNow` always takes the latest configuration received
+  (`rawConfig`, set by `connected`, `configUpdated` and "Test the
+  connection"), so a start queued behind a newer save never brings back the
+  older options (test A3).
+- **Alarm confirmation**: reads every 500 ms until 4.5 s after the request,
+  success at the first that shows the result (and differs from the state
+  read before).
+- **"Test the connection"** with an empty configuration from Gladys: fails
+  with a status, nothing started, the running sessions kept.
+- **arm()**: `armed_p1` refused on an area without P1, as `armed_p12` without
+  P2.

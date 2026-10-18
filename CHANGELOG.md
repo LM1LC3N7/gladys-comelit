@@ -65,5 +65,15 @@ the notes of the version's GitHub Release.
 - Docs: the "plugs" are every "other" object of the bridge and obey the
   "turn everything off"; the session cookie travels in clear too; the
   manifest description names the intercom doors.
+- Door devices are keyed by the target they open (address and output of the
+  intercom book): a slot given to another door is a new device, the old one
+  opens nothing.
+- A shutter stop is always decided on a read of its own made right before
+  (a shutter at its end gets no reverse command); a shared read is used at
+  most 1 s old.
+- A start waiting behind a newer configuration uses the newer one; "Test the
+  connection" refuses an empty configuration; the alarm state is read every
+  500 ms until 4.5 s to confirm a command; arm P1 is refused on an area
+  without P1.
 
 [Unreleased]: https://github.com/LM1LC3N7/gladys-comelit/commits/main

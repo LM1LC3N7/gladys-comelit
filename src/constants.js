@@ -112,6 +112,8 @@ export const TIMINGS = {
   answerBy: 4_500,
   /** The fresh read before a command, at most. */
   readBefore: 1_500,
+  /** After an alarm command, its state is read this often until answerBy. */
+  confirmEvery: 500,
   /** The object is read again this long after a command. */
   readBack: 2_000,
   /** A shutter stop (a reverse command on the bridge) is not sent again until seen or expired. */

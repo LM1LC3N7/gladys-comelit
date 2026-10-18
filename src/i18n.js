@@ -100,6 +100,10 @@ export const T = {
     en: 'Enter the address of the Comelit bridge or of the Vedo',
   },
   connecting: { fr: 'Connexion…', en: 'Connecting…' },
+  noConfig: {
+    fr: "Configuration illisible depuis Gladys : rien n'a été lancé, réessayez",
+    en: 'The configuration could not be read from Gladys: nothing was started, try again',
+  },
   connected: {
     fr: (parts) => `Connecté : ${parts.join(', ')}`,
     en: (parts) => `Connected: ${parts.join(', ')}`,
@@ -219,9 +223,9 @@ export const T = {
     fr: "Cette porte vient d'être ouverte : rien n'a été envoyé",
     en: 'This door was just opened: nothing was sent',
   },
-  doorChanged: {
-    fr: "Configuration de l'interphone changée pour cette porte, relancez une recherche : rien n'a été envoyé",
-    en: 'The intercom configuration changed for this door, scan again: nothing was sent',
+  doorMissing: {
+    fr: "Cette porte n'est plus dans la configuration de l'interphone, relancez une recherche : rien n'a été envoyé",
+    en: 'This door is no longer in the intercom configuration, scan again: nothing was sent',
   },
   intercomOff: {
     fr: "Interphone non configuré ou arrêté (jeton refusé) : rien n'a été envoyé",

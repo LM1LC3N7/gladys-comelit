@@ -43,7 +43,7 @@ import {
   SHUTTER_STATUS,
   TIMINGS,
 } from './constants.js';
-import { buildDevices, buildStates, parseFeatureId } from './devices.js';
+import { buildDevices, buildStates, doorKey, parseFeatureId } from './devices.js';
 import { COMMAND_NAMES, T, fill, word } from './i18n.js';
 import { ComelitClient } from './comelit/client.js';
 import { IconaSession, listDoors, openDoor } from './comelit/icona.js';
@@ -81,6 +81,9 @@ const changed = (before, now) =>
       Boolean(now.entryDelay) !== Boolean(before.entryDelay) ||
       Boolean(now.exitDelay) !== Boolean(before.exitDelay)),
   );
+
+/** A status read shared by several commands is used at most this old (ms). */
+const SHARED_READ_AGE = 1_000;
 
 /** A strict number: null, '', true and '1e' are not numbers. */
 const strictNumber = (value) => {
@@ -271,8 +274,11 @@ export class ComelitApp {
     return run;
   }
 
-  async startNow(raw = {}) {
+  async startNow(given = {}) {
     this.stop();
+    // Always the latest configuration received (a start queued behind a newer
+    // save never brings back the older one, options included).
+    const raw = this.rawConfig ?? given;
     this.rawConfig = raw;
     const next = normalizeConfig(raw);
     const before = places(this.config);
@@ -400,6 +406,7 @@ export class ComelitApp {
   async connected(raw = {}) {
     if (!this.started) {
       this.started = true;
+      this.rawConfig = raw;
       await this.start(raw);
       return;
     }
@@ -849,7 +856,7 @@ export class ComelitApp {
         if (generation !== this.doorGeneration) return;
         this.model.doors = new Map(
           doors.map((door) => [
-            door.id,
+            doorKey(door),
             { name: door.name, aptAddress: door.aptAddress, outputIndex: door.outputIndex },
           ]),
         );
@@ -945,7 +952,7 @@ export class ComelitApp {
     if (kind === 'area' && key === 'arm-p12')
       return button(() => this.arm(index, 'armed_p12', asked));
     if (kind === 'area' && key === 'disarm') return button(() => this.disarm(index, asked));
-    if (kind === 'door' && key === 'open') return button(() => this.door(index, asked, device));
+    if (kind === 'door' && key === 'open') return button(() => this.door(target.door, asked));
     throw new Error(`${feature?.external_id} is read-only`);
   }
 
@@ -1088,26 +1095,36 @@ export class ComelitApp {
     throw this.error(fill(T.unconfirmed, word(what, this.language)));
   }
 
-  /** A read right after an unclear answer, when there is time left: true when it shows the result. */
+  /**
+   * Reads after the send, every 500 ms until answerBy (4.5 s after the
+   * request): true as soon as one shows the result. The Vedo may take a
+   * moment to show an arming or a disarming.
+   */
   async confirmed(client, confirm, asked) {
-    const left = asked + this.timings.answerBy - this.now();
-    if (left < 300) return false;
-    try {
-      // Bounded: the ack never waits past answerBy for a read stuck in the queue.
-      let timer;
-      const late = new Promise((resolve) => {
-        timer = this.timers.setTimeout(() => resolve(false), left - 50);
-      });
-      const read = confirm({ timeout: left - 100, priority: true });
-      read.catch(() => undefined);
-      const result = await Promise.race([read, late]);
-      this.timers.clearTimeout(timer);
-      return Boolean(result);
-    } catch {
-      return false;
+    const end = asked + this.timings.answerBy;
+    while (end - this.now() >= 300) {
+      const left = end - this.now();
+      const started = this.now();
+      try {
+        // Bounded: the ack never waits past answerBy for a read stuck in the queue.
+        let timer;
+        const late = new Promise((resolve) => {
+          timer = this.timers.setTimeout(() => resolve(false), left - 50);
+        });
+        const read = confirm({ timeout: left - 100, priority: true });
+        read.catch(() => undefined);
+        const result = await Promise.race([read, late]);
+        this.timers.clearTimeout(timer);
+        if (result) return true;
+      } catch {
+        // Unreadable this time: the next read may tell.
+      }
+      const wait = started + this.timings.confirmEvery - this.now();
+      if (end - this.now() - Math.max(0, wait) < 300) return false;
+      if (wait > 0) await new Promise((resolve) => this.timers.setTimeout(resolve, wait));
     }
+    return false;
   }
-
   scheduleReadBack(client, readBack) {
     if (!readBack) return;
     const timer = this.timers.setTimeout(() => {
@@ -1132,6 +1149,8 @@ export class ComelitApp {
       last.generation === this.bridge.generation &&
       // Strictly after: a read in the same millisecond may predate the command.
       last.at > asked &&
+      // Fresh enough when deciding, not only when asked.
+      this.now() - last.at <= SHARED_READ_AGE &&
       (sent === undefined || sent < last.at)
     ) {
       return Promise.resolve(last);
@@ -1184,7 +1203,16 @@ export class ComelitApp {
     const object = this.bridgeObject('shutter', index);
     const what = fill(COMMAND_NAMES.shutter, object.name || `shutter ${index + 1}`, action);
     return this.serial('bridge', async () => {
-      const read = await this.freshStatus('shutter', index, asked);
+      // A stop sends the reverse of the movement: always decided on a read of
+      // its own, made right before (a shutter at its end must get nothing).
+      const read =
+        action === 'stop'
+          ? await this.fresh(
+              this.bridge,
+              (options) => this.bridge.readStatus('shutter', options),
+              asked,
+            )
+          : await this.freshStatus('shutter', index, asked);
       const status = read.status[index];
       if (!Object.values(SHUTTER_STATUS).includes(status)) throw this.refused(T.stateUnknown);
       this.checkStopGuard(index, status);
@@ -1307,6 +1335,9 @@ export class ComelitApp {
     const what = fill(COMMAND_NAMES[mode], index + 1);
     this.checkAllowed('arm', what);
     const area = this.vedoArea(index);
+    if (mode === 'armed_p1' && !area.p1) {
+      throw this.refused(fill(T.unknownObject, `P1 ${index + 1}`));
+    }
     if (mode === 'armed_p12' && !area.p2)
       throw this.refused(fill(T.unknownObject, `P2 ${index + 1}`));
     return this.serial('vedo', async () => {
@@ -1395,26 +1426,22 @@ export class ComelitApp {
 
   /**
    * Opens a door through the intercom bridge, behind its option. The door is
-   * looked up in the configuration the bridge gives in the same session and
-   * must still be the one the device was made for (same address and output);
+   * the target its id names (address and output), looked up in the
+   * configuration the bridge gives in the same session: missing, nothing is
+   * written (a slot of the book given to another target is another device);
    * the option and the deadline are checked again right before the first
    * opening frame. The bridge gives no confirmation: even with every frame
    * written, the answer is "sent, without confirmation". A door is not opened
    * again from Gladys for 10 s.
    */
-  async door(id, asked = this.now(), device = undefined) {
+  async door(id, asked = this.now()) {
     const door = this.model.doors?.get(id);
     const what = fill(COMMAND_NAMES.door, door?.name || `door ${id}`);
     this.checkAllowed('door', what);
-    if (!door) throw this.refused(fill(T.unknownObject, `door ${id}`));
+    if (!door) throw this.refused(T.doorMissing);
     if (this.doorState === 'refused' || !this.config.intercomToken)
       throw this.refused(T.intercomOff);
-    // What the device was made for: its params, else the doors read last.
-    const param = (name) => device?.params?.find?.((p) => p?.name === name)?.value;
-    const expected = {
-      aptAddress: param('apt_address') ?? door.aptAddress,
-      outputIndex: param('output_index') ?? String(door.outputIndex),
-    };
+    const target = { aptAddress: door.aptAddress, outputIndex: door.outputIndex };
     return this.serial('door', async () => {
       this.checkAllowed('door', what);
       const label = word(what, 'en');
@@ -1430,22 +1457,13 @@ export class ComelitApp {
         if (this.now() > sendBy) throw new ComelitError('too late', 'late');
         if (!this.isAllowed('door')) throw new ComelitError('not allowed any more', 'withdrawn');
       };
-      const verify = (found) => {
-        if (
-          found.aptAddress !== expected.aptAddress ||
-          String(found.outputIndex) !== String(expected.outputIndex)
-        ) {
-          throw new ComelitError('the door entry changed in the intercom', 'changed');
-        }
-      };
       const icona = this.icona();
       const session = new IconaSession(icona);
       this.logger.info(`DOOR from Gladys: ${label}`);
       const run = openDoor({
         ...icona,
         session,
-        doorId: id,
-        verify,
+        target,
         ready,
         onSent: () => {
           sent = true;
@@ -1494,12 +1512,10 @@ export class ComelitApp {
       if (!sent) {
         this.logger.warn(`Door NOT opened (${label}): ${err.message}`);
         if (err.kind === 'withdrawn') this.checkAllowed('door', what);
-        if (err.kind === 'missing' || err.kind === 'changed') {
+        if (err.kind === 'missing') {
           // The address book changed: read it again (after this command's turn).
           this.refreshDoors().catch(() => undefined);
-          throw this.refused(
-            err.kind === 'missing' ? fill(T.unknownObject, `door ${id}`) : T.doorChanged,
-          );
+          throw this.refused(T.doorMissing);
         }
         throw this.refused(err.kind === 'late' ? T.tooLate : T.offline);
       }
@@ -1534,7 +1550,12 @@ export class ComelitApp {
   async testConnection() {
     // Always the configuration Gladys holds now: never an older copy that
     // would bring back an option switched off since.
-    const raw = (await this.gladys.getConfig()) ?? {};
+    const raw = await this.gladys.getConfig();
+    if (!raw || typeof raw !== 'object' || Object.keys(raw).length === 0) {
+      // Nothing to start with: never a start on an empty configuration.
+      await this.setStatus(false, T.noConfig);
+      throw this.error(T.noConfig);
+    }
     this.rawConfig = raw;
     this.applyOptions(normalizeConfig(raw));
     const problem = this.configProblem();

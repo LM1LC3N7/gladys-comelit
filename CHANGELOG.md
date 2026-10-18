@@ -10,6 +10,8 @@ the notes of the version's GitHub Release.
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-10-18
+
 ### Added
 
 - Local connection to a Comelit SimpleHome Serial Bridge over HTTP, with the
@@ -83,4 +85,5 @@ the notes of the version's GitHub Release.
 - "Test the connection" on an empty configuration only fails, without
   changing the connection status.
 
-[Unreleased]: https://github.com/LM1LC3N7/gladys-comelit/commits/main
+[Unreleased]: https://github.com/LM1LC3N7/gladys-comelit/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/LM1LC3N7/gladys-comelit/releases/tag/v0.1.1

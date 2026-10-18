@@ -82,6 +82,9 @@ const changed = (before, now) =>
       Boolean(now.exitDelay) !== Boolean(before.exitDelay)),
   );
 
+/** A read-back function with the key it is grouped by. */
+const keyed = (key, fn) => Object.assign(fn, { key });
+
 /** A status read shared by several commands is used at most this old (ms). */
 const SHARED_READ_AGE = 1_000;
 
@@ -133,6 +136,8 @@ export class ComelitApp {
     /** "kind:index" -> when the last command to that bridge object was queued. */
     this.sentAt = new Map();
     this.readBacks = new Set();
+    /** read-back key -> its timer: one pending per object type. */
+    this.pendingReadBacks = new Map();
     this.doorTimer = undefined;
     this.doorFailures = 0;
     this.lastStatus = undefined;
@@ -395,6 +400,7 @@ export class ComelitApp {
     this.doorGeneration = (this.doorGeneration ?? 0) + 1;
     for (const timer of this.readBacks) this.timers.clearTimeout(timer);
     this.readBacks.clear();
+    this.pendingReadBacks.clear();
   }
 
   configProblem() {
@@ -1016,7 +1022,7 @@ export class ComelitApp {
     what,
     asked,
     run,
-    { client, command, onSent = () => {}, readBack, confirm, vedo = false },
+    { client, command, onSent = () => {}, readBack, confirm, vedo = false, deferConfirm = false },
   ) {
     const label = word(what, 'en');
     if (this.now() > asked + this.timings.sendBy) {
@@ -1086,13 +1092,17 @@ export class ComelitApp {
       return;
     }
     onSent();
-    if (confirm && (await this.confirmed(client, confirm, asked))) {
-      this.logger.info(`Command sent (HTTP ${status}), confirmed by the state read (${label})`);
-      return;
-    }
-    this.logger.warn(`Command sent, NOT confirmed (${label}): HTTP ${status}`);
-    this.scheduleReadBack(client, readBack);
-    throw this.error(fill(T.unconfirmed, word(what, this.language)));
+    const finish = async () => {
+      if (confirm && (await this.confirmed(client, confirm, asked))) {
+        this.logger.info(`Command sent (HTTP ${status}), confirmed by the state read (${label})`);
+        return;
+      }
+      this.logger.warn(`Command sent, NOT confirmed (${label}): HTTP ${status}`);
+      this.scheduleReadBack(client, readBack);
+      throw this.error(fill(T.unconfirmed, word(what, this.language)));
+    };
+    // deferConfirm: the caller runs the confirmation after it freed its queue.
+    return deferConfirm ? finish : finish();
   }
 
   /**
@@ -1125,14 +1135,23 @@ export class ComelitApp {
     }
     return false;
   }
+
+  /**
+   * One read back pending per object type (its key): a burst of commands
+   * ("turn everything off") costs one read, never one per command in the queue.
+   */
   scheduleReadBack(client, readBack) {
     if (!readBack) return;
+    const { key } = readBack;
+    if (key !== undefined && this.pendingReadBacks.has(key)) return;
     const timer = this.timers.setTimeout(() => {
       this.readBacks.delete(timer);
+      if (key !== undefined) this.pendingReadBacks.delete(key);
       if (!client.connected) return;
       readBack().catch((err) => this.logger.debug(`Read back failed: ${err.message}`));
     }, this.timings.readBack);
     this.readBacks.add(timer);
+    if (key !== undefined) this.pendingReadBacks.set(key, timer);
   }
 
   /**
@@ -1186,7 +1205,7 @@ export class ComelitApp {
           ),
         {
           client: this.bridge,
-          readBack: () => this.bridge.readStatus(kind),
+          readBack: keyed(`bridge:${kind}`, () => this.bridge.readStatus(kind)),
         },
       );
     });
@@ -1270,7 +1289,7 @@ export class ComelitApp {
               });
             }
           },
-          readBack: () => this.bridge.readStatus('shutter'),
+          readBack: keyed('bridge:shutter', () => this.bridge.readStatus('shutter')),
         },
       );
     });
@@ -1312,7 +1331,7 @@ export class ComelitApp {
         {
           client: this.bridge,
           command: 'setpoint',
-          readBack: () => this.bridge.readStatus('thermostat'),
+          readBack: keyed('bridge:thermostat', () => this.bridge.readStatus('thermostat')),
         },
       );
     });
@@ -1340,7 +1359,9 @@ export class ComelitApp {
     }
     if (mode === 'armed_p12' && !area.p2)
       throw this.refused(fill(T.unknownObject, `P2 ${index + 1}`));
-    return this.serial('vedo', async () => {
+    // The queue of the alarm is freed once the request is sent: the
+    // confirmation reads run after it, never holding the next command.
+    const finish = await this.serial('vedo', async () => {
       this.checkAllowed('arm', what);
       const client = this.alarmReady();
       const read = await this.fresh(client, (options) => client.readAreas(options), asked);
@@ -1364,7 +1385,7 @@ export class ComelitApp {
       }
       this.checkAllowed('arm', what);
       this.logger.info(`ARMING from Gladys: ${word(what, 'en')}`);
-      await this.send(
+      return this.send(
         what,
         asked,
         (options) => client.vedoAction(ARM_ACTIONS[mode], index, options),
@@ -1372,23 +1393,26 @@ export class ComelitApp {
           client,
           command: 'arm',
           vedo: true,
+          deferConfirm: true,
           onSent: () =>
             this.commanded.set(index, { mode, until: this.now() + this.timings.commandMemory }),
           confirm: async (options) => {
             const now = (await client.readAreas(options)).get(index);
             return changed(status, now) && (now.mode === mode || now.exitDelay);
           },
-          readBack: () => client.readAreas(),
+          readBack: keyed(`vedo:${client.kind}`, () => client.readAreas()),
         },
       );
     });
+    if (finish) await finish();
   }
 
   async disarm(index, asked = this.now()) {
     const what = fill(COMMAND_NAMES.disarm, index + 1);
     this.checkAllowed('disarm', what);
     this.vedoArea(index);
-    return this.serial('vedo', async () => {
+    // As arm(): the confirmation runs once the queue of the alarm is freed.
+    const finish = await this.serial('vedo', async () => {
       this.checkAllowed('disarm', what);
       const client = this.alarmReady();
       const read = await this.fresh(client, (options) => client.readAreas(options), asked);
@@ -1400,10 +1424,11 @@ export class ComelitApp {
       }
       this.checkAllowed('disarm', what);
       this.logger.info(`DISARMING from Gladys: ${word(what, 'en')}`);
-      await this.send(what, asked, (options) => client.vedoAction(DISARM_ACTION, index, options), {
+      return this.send(what, asked, (options) => client.vedoAction(DISARM_ACTION, index, options), {
         client,
         command: 'disarm',
         vedo: true,
+        deferConfirm: true,
         onSent: () =>
           this.commanded.set(index, {
             mode: 'disarmed',
@@ -1419,9 +1444,10 @@ export class ComelitApp {
             !now.exitDelay
           );
         },
-        readBack: () => client.readAreas(),
+        readBack: keyed(`vedo:${client.kind}`, () => client.readAreas()),
       });
     });
+    if (finish) await finish();
   }
 
   /**
@@ -1553,7 +1579,6 @@ export class ComelitApp {
     const raw = await this.gladys.getConfig();
     if (!raw || typeof raw !== 'object' || Object.keys(raw).length === 0) {
       // Nothing to start with: never a start on an empty configuration.
-      await this.setStatus(false, T.noConfig);
       throw this.error(T.noConfig);
     }
     this.rawConfig = raw;

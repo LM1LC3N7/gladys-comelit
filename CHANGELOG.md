@@ -75,5 +75,12 @@ the notes of the version's GitHub Release.
   connection" refuses an empty configuration; the alarm state is read every
   500 ms until 4.5 s to confirm a command; arm P1 is refused on an area
   without P1.
+- One read back pending per object type: a burst of commands ("turn
+  everything off" after "close everything") no longer fills the queue of the
+  bridge with reads, every command leaves in time.
+- The queue of the alarm is freed once a command is sent; its confirmation
+  reads no longer delay the next alarm command.
+- "Test the connection" on an empty configuration only fails, without
+  changing the connection status.
 
 [Unreleased]: https://github.com/LM1LC3N7/gladys-comelit/commits/main

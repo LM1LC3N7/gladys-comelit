@@ -717,6 +717,7 @@ test('"Test the connection" never starts on an empty configuration', async (t) =
   assert.equal(result.success, false);
   assert.match(result.error, /could not be read/);
   assert.equal(ctx.app.bridge.connected, true, 'the running session is kept');
+  assert.equal(ctx.gladys.fake.connectionStatus.connected, true, 'the status is not touched');
 });
 test('alarm: a 200 alone, or a state read that did not change, is no confirmation', async (t) => {
   const ctx = await setup(t, { config: { allow_arm: true, allow_disarm: true } });
@@ -773,4 +774,67 @@ test('arm buttons follow P1 and P2 of each area; open refused while a stop is pe
   const open = await ctx.set('shutter', 0, 'state', 1);
   assert.match(open.error, /previous stop/);
   assert.ok(ctx.logger.lines.some((l) => /Command REFUSED \(.*shutter:0:state\)/.test(l)));
+});
+
+test('"close everything" then "turn everything off" on a slow bridge: every command leaves', async (t) => {
+  const bridge = new FakeBridge();
+  bridge.objects.shutter = {
+    desc: Array.from({ length: 8 }, (_, i) => `Volet ${i + 1}`),
+    status: Array(8).fill(0),
+  };
+  bridge.objects.light = {
+    desc: Array.from({ length: 12 }, (_, i) => `Lumière ${i + 1}`),
+    status: Array(12).fill(1),
+  };
+  const timings = {
+    ...FAST,
+    gap: 250,
+    sendBy: 3_500,
+    answerBy: 4_500,
+    readBefore: 1_500,
+    readBack: 2_000,
+  };
+  const ctx = await setup(t, { bridge, timings });
+  await up(ctx);
+  bridge.hook = async () => {
+    await sleep(200);
+    return undefined;
+  };
+  const shutters = await Promise.all(
+    Array.from({ length: 8 }, (_, i) => ctx.set('shutter', i, 'state', -1)),
+  );
+  assert.ok(
+    shutters.every((a) => a.success),
+    JSON.stringify(shutters.map((a) => a.error)),
+  );
+  const lights = await Promise.all(
+    Array.from({ length: 12 }, (_, i) => ctx.set('light', i, 'state', 0)),
+  );
+  assert.ok(
+    lights.every((a) => a.success),
+    JSON.stringify(lights.map((a) => a.error)),
+  );
+  assert.deepEqual(bridge.objects.light.status, Array(12).fill(0));
+  bridge.hook = undefined;
+  await sleep(2_300);
+  const reads = bridge.log.filter((l) => l.includes('icon_status.json?type=light')).length;
+  assert.ok(reads <= 2, `one read back for the twelve lights, not ${reads}`);
+});
+
+test('the alarm queue is free once a command is sent: its confirmation never delays the next', async (t) => {
+  const timings = { ...FAST, sendBy: 1_000, answerBy: 1_500, confirmEvery: 200 };
+  const ctx = await setup(t, { config: { allow_arm: true, allow_disarm: true }, timings });
+  await up(ctx);
+  // Area 1: the Vedo answers but never shows the arming (confirmation runs to the end).
+  ctx.fake.hook = async (entry) =>
+    entry.path.includes('action.cgi') && entry.query.tot === '0'
+      ? { response: { status: 200, headers: {}, text: '' } }
+      : undefined;
+  ctx.fake.areas.armed[1] = 4;
+  const [arm, disarm] = await Promise.all([
+    ctx.set('area', 0, 'arm-total', 1),
+    ctx.set('area', 1, 'disarm', 1),
+  ]);
+  assert.match(arm.error, /Sent, without confirmation/);
+  assert.equal(disarm.success, true, disarm.error);
 });

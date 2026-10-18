@@ -207,3 +207,18 @@ test('the persisted state: stops only, repaired, never a secret', async () => {
   await store.save({ stops: [] });
   assert.deepEqual(await store.load(), { stops: [] });
 });
+
+test('a 401 or 403 to the PIN posted is a refusal: stop, no new try', async (t) => {
+  for (const status of [401, 403]) {
+    const fake = new FakeBridge();
+    fake.hook = async (entry) =>
+      entry.path === 'login.cgi' ? { response: { status, headers: {}, text: '' } } : undefined;
+    const { c, events } = client(t, fake);
+    c.start();
+    await until(() => events.length > 0);
+    assert.equal(events[0][1].refused, true, String(status));
+    assert.equal(events[0][1].retryIn, undefined);
+    await sleep(80);
+    assert.equal(fake.log.filter((l) => l.startsWith('POST login.cgi')).length, 1);
+  }
+});

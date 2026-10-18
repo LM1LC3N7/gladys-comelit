@@ -247,7 +247,9 @@ export function buildDevices(gladys, config, model, created = gladys.devices) {
     }
     for (const [index, area] of sorted(model.vedo.areas)) {
       const areaIds = ids.object(gladys, 'area', index);
-      const keys = Object.keys(AREA_FEATURES).filter((key) => key !== 'arm-p12' || area.p2);
+      const keys = Object.keys(AREA_FEATURES).filter(
+        (key) => (key !== 'arm-p12' || area.p2) && (key !== 'arm-p1' || area.p1),
+      );
       devices.push({
         name: area.name || word(DEVICE_NAMES.area, language)(index + 1),
         external_id: areaIds.device,
@@ -289,7 +291,14 @@ export function buildDevices(gladys, config, model, created = gladys.devices) {
       name: door.name || word(DEVICE_NAMES.door, language)(id),
       external_id: doorIds.device,
       should_poll: false,
-      params: [{ name: 'door', value: String(id) }],
+      // What the door is in the intercom address book: checked again at each opening.
+      params: [
+        { name: 'door', value: String(id) },
+        ...(door.aptAddress ? [{ name: 'apt_address', value: door.aptAddress }] : []),
+        ...(door.outputIndex !== undefined
+          ? [{ name: 'output_index', value: String(door.outputIndex) }]
+          : []),
+      ],
       features: [feature(doorIds, 'open', word(FEATURE_NAMES.open, language), button)],
     });
   }

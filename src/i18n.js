@@ -219,6 +219,10 @@ export const T = {
     fr: "Cette porte vient d'être ouverte : rien n'a été envoyé",
     en: 'This door was just opened: nothing was sent',
   },
+  doorChanged: {
+    fr: "Configuration de l'interphone changée pour cette porte, relancez une recherche : rien n'a été envoyé",
+    en: 'The intercom configuration changed for this door, scan again: nothing was sent',
+  },
   intercomOff: {
     fr: "Interphone non configuré ou arrêté (jeton refusé) : rien n'a été envoyé",
     en: 'The intercom is not set up or stopped (token refused): nothing was sent',

@@ -44,4 +44,26 @@ the notes of the version's GitHub Release.
 - The PINs and the token are secret fields, never logged; the answers of the
   bridge and of the intercom are bounded and parsed without prototype keys.
 
+### Fixed
+
+- "Test the connection" could bring back an option switched off since the
+  start: it now reads the configuration from Gladys, and the options apply
+  at once when saved.
+- A door given another address or output in the intercom is refused with
+  "scan again", nothing written, and the doors are read again.
+- An alarm command is confirmed only by a state read that changed and shows
+  the result (a disarm also needs no alarm nor delay running); a 200 of the
+  older Vedo firmware no longer counts as a success by itself.
+- A 401 or 403 answer to the PIN is a refused PIN (stop, no new try).
+- A door opening is always reported "sent, without confirmation".
+- "Close everything": commands of one type share a status read made after
+  they arrived, and the bridge calls no longer wait 250 ms (only the Vedo
+  ones): eight shutters closed at once all leave in time.
+- The arm P1 button only shows on areas with a P1; opening or closing a
+  shutter is refused while a stop is not seen yet; every refused command is
+  logged; at most 10 cookies are kept; a stop is noted at once.
+- Docs: the "plugs" are every "other" object of the bridge and obey the
+  "turn everything off"; the session cookie travels in clear too; the
+  manifest description names the intercom doors.
+
 [Unreleased]: https://github.com/LM1LC3N7/gladys-comelit/commits/main

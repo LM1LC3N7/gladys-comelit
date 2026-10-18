@@ -68,6 +68,20 @@ const emptyModel = () => ({ bridge: undefined, vedo: undefined, doors: undefined
 const isButtonPush = (value) =>
   value === BUTTON_PUSH.PRESSED || value === String(BUTTON_PUSH.PRESSED);
 
+/**
+ * Whether an area state read after a command differs from the one read
+ * before it: only a change can confirm a command (an unchanged state shows
+ * nothing, whatever it is).
+ */
+const changed = (before, now) =>
+  Boolean(
+    now &&
+    (now.level !== before.level ||
+      Boolean(now.alarm) !== Boolean(before.alarm) ||
+      Boolean(now.entryDelay) !== Boolean(before.entryDelay) ||
+      Boolean(now.exitDelay) !== Boolean(before.exitDelay)),
+  );
+
 /** A strict number: null, '', true and '1e' are not numbers. */
 const strictNumber = (value) => {
   if (typeof value === 'number') return Number.isFinite(value) ? value : undefined;
@@ -113,6 +127,8 @@ export class ComelitApp {
     this.stopGuards = new Map();
     /** door -> until: a door opened from Gladys. */
     this.doorGuards = new Map();
+    /** "kind:index" -> when the last command to that bridge object was queued. */
+    this.sentAt = new Map();
     this.readBacks = new Set();
     this.doorTimer = undefined;
     this.doorFailures = 0;
@@ -142,6 +158,9 @@ export class ComelitApp {
       if (source === 'bridge') this.bridgeOnline = false;
       if (source === 'vedo' || vedoSource(this.config) === 'bridge') this.vedoOnline = false;
       this.downInfo[source] = info;
+      if (info.refused) {
+        this.persistStop(source === 'bridge' ? 'bridge_pin' : 'vedo_pin').catch(() => undefined);
+      }
       this.guard(() => this.onDown(source, info, wasOnline));
     });
     client.on('status', ({ kind, status, val }) =>
@@ -159,6 +178,7 @@ export class ComelitApp {
       }
       this.vedoOnline = false;
       this.vedoState = info.refused ? 'refused' : 'down';
+      if (info.refused) this.persistStop('vedo_pin').catch(() => undefined);
       this.guard(() => this.onVedoLost(info));
     });
   }
@@ -225,11 +245,16 @@ export class ComelitApp {
     );
   }
 
-  async persistStop(kind) {
-    const memory = await this.loadMemory();
+  /**
+   * Notes a stop in memory at once (synchronously: no command or restart
+   * running meanwhile can miss it), then saves it to /data.
+   */
+  persistStop(kind) {
+    const memory = this.memory ?? normalizeMemory(null);
+    this.memory = memory;
     memory.stops = memory.stops.filter((s) => s.kind !== kind);
     memory.stops.push({ kind, place: this.stopPlace(kind), at: this.now() });
-    await this.saveMemory();
+    return this.saveMemory();
   }
 
   async liftStops(kinds) {
@@ -391,9 +416,24 @@ export class ComelitApp {
     await this.publishTransports();
   }
 
+  /** The four command options of `next`, into the configuration in use, synchronously. */
+  applyOptions(next) {
+    const options = {};
+    for (const key of ['allowSetpoint', 'allowArm', 'allowDisarm', 'allowDoor']) {
+      options[key] = next[key];
+    }
+    this.config = { ...this.config, ...options };
+  }
+
   /** A new address or secret reconnects (and lifts its stop); the rest applies at once. */
   async configUpdated(raw = {}) {
+    // The latest configuration, whatever the branch: a later restart (a
+    // "Test the connection") never brings back an older one.
+    this.rawConfig = raw;
     const next = normalizeConfig(raw);
+    // The options apply at once, before anything is awaited: a command
+    // checked from now on sees an option switched off.
+    this.applyOptions(next);
     const nextStops = stopKeys(next);
     const changed = Object.keys(nextStops).filter(
       (kind) => nextStops[kind] !== this.stopKeys?.[kind],
@@ -549,7 +589,7 @@ export class ComelitApp {
     if (refused) {
       const kind = source === 'bridge' ? 'bridge_pin' : 'vedo_pin';
       this.logger.error(`Comelit ${source}: PIN refused, connection stopped (no new try)`);
-      await this.persistStop(kind);
+      // The stop was noted when the event came (see wire()).
       if (kind === 'vedo_pin') this.vedoState = 'refused';
     } else {
       this.logger.warn(`Comelit ${source}: ${reason}; next try in ${seconds} s`);
@@ -569,8 +609,7 @@ export class ComelitApp {
     for (const event of events) await this.effect(event);
   }
 
-  async onVedoLost(info) {
-    if (info.refused) await this.persistStop('vedo_pin');
+  async onVedoLost(_info) {
     await this.refreshStatus();
     await this.publishStates();
     await this.publishTransports();
@@ -808,7 +847,12 @@ export class ComelitApp {
       try {
         const { doors } = await listDoors(this.icona());
         if (generation !== this.doorGeneration) return;
-        this.model.doors = new Map(doors.map((door) => [door.id, { name: door.name }]));
+        this.model.doors = new Map(
+          doors.map((door) => [
+            door.id,
+            { name: door.name, aptAddress: door.aptAddress, outputIndex: door.outputIndex },
+          ]),
+        );
         this.doorState = 'ok';
         this.doorFailures = 0;
         this.logger.info(`Comelit intercom: ${doors.length} door(s)`);
@@ -855,7 +899,19 @@ export class ComelitApp {
   }
 
   /** A press, a switch or a value from Gladys. */
-  async setValue(_device, feature, value) {
+  async setValue(device, feature, value) {
+    try {
+      return await this.command(device, feature, value);
+    } catch (err) {
+      // One line for every command refused before anything was sent.
+      if (err instanceof Refused) {
+        this.logger.warn(`Command REFUSED (${feature?.external_id}): ${err.message}`);
+      }
+      throw err;
+    }
+  }
+
+  async command(device, feature, value) {
     const target = parseFeatureId(feature?.external_id);
     const asked = this.now();
     if (!target) throw new Error(`${feature?.external_id} is read-only`);
@@ -889,7 +945,7 @@ export class ComelitApp {
     if (kind === 'area' && key === 'arm-p12')
       return button(() => this.arm(index, 'armed_p12', asked));
     if (kind === 'area' && key === 'disarm') return button(() => this.disarm(index, asked));
-    if (kind === 'door' && key === 'open') return button(() => this.door(index, asked));
+    if (kind === 'door' && key === 'open') return button(() => this.door(index, asked, device));
     throw new Error(`${feature?.external_id} is read-only`);
   }
 
@@ -940,12 +996,14 @@ export class ComelitApp {
   }
 
   /**
-   * Sends a command. Resolves when the bridge accepted it (HTTP 200, or the
-   * state read right after shows it done); throws Refused when nothing was
-   * sent, an Error otherwise. Only a 4xx answer is a refusal (except 404 on
-   * the new Vedo firmware, which answers 404 to every action, aiocomelit
-   * says): any other outcome after the write (no answer, a 5xx, a lost
-   * connection) is "sent, without confirmation", with onSent() and a read back.
+   * Sends a command. Resolves when the bridge accepted it (HTTP 200 for the
+   * bridge objects; for the alarm, only once the state read right after
+   * shows it done); throws Refused when nothing was sent, an Error otherwise.
+   * Only a 4xx answer is a refusal (except 404 on the new Vedo firmware,
+   * which answers 404 to every action, aiocomelit says): any other outcome
+   * after the write (no answer, a 5xx, a lost connection, an alarm state that
+   * does not show it in time) is "sent, without confirmation", with onSent()
+   * and a read back.
    */
   async send(
     what,
@@ -1007,16 +1065,18 @@ export class ComelitApp {
     }
     const { status } = outcome;
     const newFirmware = vedo && client.newFirmware;
-    if (status === 200) {
-      onSent();
-      this.logger.info(`Command accepted by the bridge (${label})`);
-      this.scheduleReadBack(client, readBack);
-      return;
-    }
     if (status >= 400 && status < 500 && !(newFirmware && status === 404)) {
       this.logger.warn(`Command REFUSED by the bridge (${label}): HTTP ${status}`);
       this.scheduleReadBack(client, readBack);
       throw this.error(fill(T.refusedByBridge, word(what, this.language), status));
+    }
+    // An alarm command is a success only once the state read shows it: the
+    // Vedo answers 200 (older firmware) or 404 (new one) whatever it did.
+    if (status === 200 && !vedo) {
+      onSent();
+      this.logger.info(`Command accepted by the bridge (${label})`);
+      this.scheduleReadBack(client, readBack);
+      return;
     }
     onSent();
     if (confirm && (await this.confirmed(client, confirm, asked))) {
@@ -1058,6 +1118,33 @@ export class ComelitApp {
     this.readBacks.add(timer);
   }
 
+  /**
+   * The statuses of a type for a command that arrived at `asked`: a read
+   * asked of the bridge after it, with no command sent to that object since,
+   * serves it (a "close everything" shares one read); else a fresh read.
+   */
+  freshStatus(kind, index, asked) {
+    const last = this.bridge.lastReads.get(kind);
+    const sent = this.sentAt.get(`${kind}:${index}`);
+    if (
+      last &&
+      last.at !== undefined &&
+      last.generation === this.bridge.generation &&
+      // Strictly after: a read in the same millisecond may predate the command.
+      last.at > asked &&
+      (sent === undefined || sent < last.at)
+    ) {
+      return Promise.resolve(last);
+    }
+    return this.fresh(this.bridge, (options) => this.bridge.readStatus(kind, options), asked);
+  }
+
+  /** Notes that a command to this object is on its way (its earlier reads no longer hold). */
+  bridgeCommand(kind, index, run) {
+    this.sentAt.set(`${kind}:${index}`, this.now());
+    return run();
+  }
+
   bridgeObject(kind, index) {
     const object = this.model.bridge?.objects?.[kind]?.get(index);
     if (!object) throw this.refused(fill(T.unknownObject, `${kind} ${index + 1}`));
@@ -1074,7 +1161,10 @@ export class ComelitApp {
       await this.send(
         what,
         asked,
-        (options) => this.bridge.deviceAction(kind, index, on ? 1 : 0, options),
+        (options) =>
+          this.bridgeCommand(kind, index, () =>
+            this.bridge.deviceAction(kind, index, on ? 1 : 0, options),
+          ),
         {
           client: this.bridge,
           readBack: () => this.bridge.readStatus(kind),
@@ -1094,16 +1184,21 @@ export class ComelitApp {
     const object = this.bridgeObject('shutter', index);
     const what = fill(COMMAND_NAMES.shutter, object.name || `shutter ${index + 1}`, action);
     return this.serial('bridge', async () => {
-      const read = await this.fresh(
-        this.bridge,
-        (options) => this.bridge.readStatus('shutter', options),
-        asked,
-      );
+      const read = await this.freshStatus('shutter', index, asked);
       const status = read.status[index];
       if (!Object.values(SHUTTER_STATUS).includes(status)) throw this.refused(T.stateUnknown);
       this.checkStopGuard(index, status);
       let num;
       if (action === 'open' || action === 'close') {
+        const guard = this.stopGuards.get(index);
+        if (guard && this.now() < guard.until) {
+          // A stop not seen yet: the shutter may still move, and a command now
+          // could stop it or start it again: nothing until the stop is seen.
+          this.logger.warn(
+            `Shutter REFUSED (${word(what, 'en')}): the previous stop is not seen yet`,
+          );
+          throw this.refused(T.stopPending);
+        }
         const same = action === 'open' ? SHUTTER_STATUS.OPENING : SHUTTER_STATUS.CLOSING;
         const opposite = action === 'open' ? SHUTTER_STATUS.CLOSING : SHUTTER_STATUS.OPENING;
         if (status === same) {
@@ -1133,7 +1228,10 @@ export class ComelitApp {
       await this.send(
         what,
         asked,
-        (options) => this.bridge.deviceAction('shutter', index, num, options),
+        (options) =>
+          this.bridgeCommand('shutter', index, () =>
+            this.bridge.deviceAction('shutter', index, num, options),
+          ),
         {
           client: this.bridge,
           onSent: () => {
@@ -1163,11 +1261,7 @@ export class ComelitApp {
     }
     return this.serial('bridge', async () => {
       this.checkAllowed('setpoint', what);
-      const read = await this.fresh(
-        this.bridge,
-        (options) => this.bridge.readStatus('thermostat', options),
-        asked,
-      );
+      const read = await this.freshStatus('thermostat', index, asked);
       const clima = parseClima(read.val[index]);
       if (!clima || clima.mode === undefined || clima.automatic === undefined) {
         throw this.refused(T.stateUnknown);
@@ -1180,11 +1274,19 @@ export class ComelitApp {
       }
       this.checkAllowed('setpoint', what);
       this.logger.info(`Comelit: ${word(what, 'en')}`);
-      await this.send(what, asked, (options) => this.bridge.climaSetpoint(index, value, options), {
-        client: this.bridge,
-        command: 'setpoint',
-        readBack: () => this.bridge.readStatus('thermostat'),
-      });
+      await this.send(
+        what,
+        asked,
+        (options) =>
+          this.bridgeCommand('thermostat', index, () =>
+            this.bridge.climaSetpoint(index, value, options),
+          ),
+        {
+          client: this.bridge,
+          command: 'setpoint',
+          readBack: () => this.bridge.readStatus('thermostat'),
+        },
+      );
     });
   }
 
@@ -1243,7 +1345,7 @@ export class ComelitApp {
             this.commanded.set(index, { mode, until: this.now() + this.timings.commandMemory }),
           confirm: async (options) => {
             const now = (await client.readAreas(options)).get(index);
-            return now && (now.mode === mode || now.exitDelay);
+            return changed(status, now) && (now.mode === mode || now.exitDelay);
           },
           readBack: () => client.readAreas(),
         },
@@ -1278,7 +1380,13 @@ export class ComelitApp {
           }),
         confirm: async (options) => {
           const now = (await client.readAreas(options)).get(index);
-          return now && now.mode === 'disarmed' && !now.exitDelay;
+          return (
+            changed(status, now) &&
+            now.mode === 'disarmed' &&
+            !now.alarm &&
+            !now.entryDelay &&
+            !now.exitDelay
+          );
         },
         readBack: () => client.readAreas(),
       });
@@ -1287,19 +1395,26 @@ export class ComelitApp {
 
   /**
    * Opens a door through the intercom bridge, behind its option. The door is
-   * looked up in the configuration the bridge gives in the same session; the
-   * option and the deadline are checked again right before the first opening
-   * frame. The bridge gives no confirmation: all frames written is a success;
-   * a failure after the first one is "sent, without confirmation". A door is
-   * not opened again from Gladys for 10 s.
+   * looked up in the configuration the bridge gives in the same session and
+   * must still be the one the device was made for (same address and output);
+   * the option and the deadline are checked again right before the first
+   * opening frame. The bridge gives no confirmation: even with every frame
+   * written, the answer is "sent, without confirmation". A door is not opened
+   * again from Gladys for 10 s.
    */
-  async door(id, asked = this.now()) {
+  async door(id, asked = this.now(), device = undefined) {
     const door = this.model.doors?.get(id);
     const what = fill(COMMAND_NAMES.door, door?.name || `door ${id}`);
     this.checkAllowed('door', what);
     if (!door) throw this.refused(fill(T.unknownObject, `door ${id}`));
     if (this.doorState === 'refused' || !this.config.intercomToken)
       throw this.refused(T.intercomOff);
+    // What the device was made for: its params, else the doors read last.
+    const param = (name) => device?.params?.find?.((p) => p?.name === name)?.value;
+    const expected = {
+      aptAddress: param('apt_address') ?? door.aptAddress,
+      outputIndex: param('output_index') ?? String(door.outputIndex),
+    };
     return this.serial('door', async () => {
       this.checkAllowed('door', what);
       const label = word(what, 'en');
@@ -1315,6 +1430,14 @@ export class ComelitApp {
         if (this.now() > sendBy) throw new ComelitError('too late', 'late');
         if (!this.isAllowed('door')) throw new ComelitError('not allowed any more', 'withdrawn');
       };
+      const verify = (found) => {
+        if (
+          found.aptAddress !== expected.aptAddress ||
+          String(found.outputIndex) !== String(expected.outputIndex)
+        ) {
+          throw new ComelitError('the door entry changed in the intercom', 'changed');
+        }
+      };
       const icona = this.icona();
       const session = new IconaSession(icona);
       this.logger.info(`DOOR from Gladys: ${label}`);
@@ -1322,6 +1445,7 @@ export class ComelitApp {
         ...icona,
         session,
         doorId: id,
+        verify,
         ready,
         onSent: () => {
           sent = true;
@@ -1355,8 +1479,9 @@ export class ComelitApp {
         throw this.error(fill(T.doorUnconfirmed, word(what, this.language)));
       }
       if (!(outcome instanceof Error)) {
+        // Every frame written, and still nothing says the door opened.
         this.logger.info(`Door opening sent (${label}); the intercom bridge gives no confirmation`);
-        return;
+        throw this.error(fill(T.doorUnconfirmed, word(what, this.language)));
       }
       const err = outcome;
       if (err instanceof ComelitError && err.kind === 'refused') {
@@ -1369,14 +1494,19 @@ export class ComelitApp {
       if (!sent) {
         this.logger.warn(`Door NOT opened (${label}): ${err.message}`);
         if (err.kind === 'withdrawn') this.checkAllowed('door', what);
-        if (err.kind === 'missing') throw this.refused(fill(T.unknownObject, `door ${id}`));
+        if (err.kind === 'missing' || err.kind === 'changed') {
+          // The address book changed: read it again (after this command's turn).
+          this.refreshDoors().catch(() => undefined);
+          throw this.refused(
+            err.kind === 'missing' ? fill(T.unknownObject, `door ${id}`) : T.doorChanged,
+          );
+        }
         throw this.refused(err.kind === 'late' ? T.tooLate : T.offline);
       }
       this.logger.warn(`Door sent, NOT confirmed (${label}): ${err.message}`);
       throw this.error(fill(T.doorUnconfirmed, word(what, this.language)), err);
     });
   }
-
   // --- Configuration button ----------------------------------------------------
 
   /** Waits for a client's session to come up or go down, at most `timeout` ms. */
@@ -1402,6 +1532,11 @@ export class ComelitApp {
    * up (a session up is kept), reads the doors again, tells what was found.
    */
   async testConnection() {
+    // Always the configuration Gladys holds now: never an older copy that
+    // would bring back an option switched off since.
+    const raw = (await this.gladys.getConfig()) ?? {};
+    this.rawConfig = raw;
+    this.applyOptions(normalizeConfig(raw));
     const problem = this.configProblem();
     if (problem) throw this.error(problem);
     await this.liftStops(['bridge_pin', 'vedo_pin', 'icona_token']);
@@ -1412,7 +1547,7 @@ export class ComelitApp {
       (source === 'bridge' && this.vedoState !== 'ok');
     if (restart) {
       await this.setStatus(false, T.connecting);
-      await this.start(this.rawConfig ?? (await this.gladys.getConfig()));
+      await this.start(raw);
     } else {
       this.startIntercom();
     }

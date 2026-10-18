@@ -65,7 +65,8 @@ up to date at the end of every milestone.
   opening frame (comelit-client writes `0x00` / `0x20` without the `0x18` its
   actuator frames carry); whether the configuration `none`, the server info
   and the two answers after each init are needed; the encoding of the door
-  names.
+  names. Kept as comelit-client writes it until a real bridge says
+  otherwise (milestone 2).
 
 ## Decisions
 
@@ -83,8 +84,9 @@ up to date at the end of every milestone.
   Actions -> Release (the first patch release gives 0.1.1).
 - **One installation per integration**: one bridge, one alarm (through the
   bridge, or a Vedo IP when its address is given), one intercom bridge. One
-  HTTP session per host (cookie jar per client), one request at a time,
-  never two closer than 250 ms, commands and their reads before the polling.
+  HTTP session per host (cookie jar per client, 10 cookies at most), one
+  request at a time, commands and their reads before the polling; 250 ms
+  between two Vedo calls only, 1.5 s between two thermostat commands.
 - **Ids**: `bridge:comelit`, `vedo:comelit`, `light:<i>`, `plug:<i>`,
   `shutter:<i>`, `thermostat:<i>`, `area:<i>`, `zone:<i>` with the 0-based
   index the bridge gives (as Home Assistant), `door:<id>` with the id of the
@@ -109,18 +111,24 @@ up to date at the end of every milestone.
   the bridge forgets that PIN until the next configuration, even across its
   own reconnections. Lifted by saving a new address, port or secret (another
   setting saved never lifts it), or by "Test the connection". A reconnection
-  to Gladys keeps the stops.
+  to Gladys keeps the stops. A login.cgi answered 401 or 403 is a refusal
+  too. The stop is noted in memory synchronously when the event comes, then
+  saved.
 - **Other failures**: 10 s, 30 s, 1 min, 2 min, then 5 min between
   sessions; a discovery that fails fails the session (never a partial list);
   the Vedo behind the bridge that fails shows offline and is tried again at
   the next polls without touching the lights.
 - **Commands**: sent within 3.5 s of the request or withdrawn ("nothing was
-  sent"); answer awaited until 4.5 s. HTTP 200: accepted; a 4xx: refused by
+  sent"); answer awaited until 4.5 s. HTTP 200: accepted (bridge objects
+  only); a 4xx: refused by
   the bridge (except 404 on the new Vedo firmware, which aiocomelit says
   answers 404 to every action); any other outcome after the write (5xx, no
   answer, lost connection): "sent, without confirmation" with a read back in
-  2 s. For the alarm, an unclear answer is followed by a state read within
-  the time left: a success only if it shows the result.
+  2 s. For the alarm, every answer (200 on the older firmware, 404 on the
+  new one) is followed by a state read within the time left: a success only
+  if that state differs from the one read before the send and shows the
+  result (disarmed: no alarm, no entry or exit delay); else "sent, without
+  confirmation" and a read back.
 - **Alarm**: arming refused unless the area is disarmed with no delay nor
   alarm running; already in the mode asked: nothing sent; disarming sends
   unless disarmed with nothing running. Never forced (`force=0`); HA passes
@@ -138,9 +146,8 @@ up to date at the end of every milestone.
   address and token are set; one short ICONA session per operation (list,
   open); the door looked up in the configuration read in the same session;
   the option and the deadline checked before the CTPP channel and before the
-  first opening frame; all frames written is a success (the bridge gives no
-  confirmation, documented); a failure after the first frame is "sent,
-  without confirmation"; at 4.5 s the session is closed, nothing more is
+  first opening frame; the answer is always "sent, without confirmation",
+  even with every frame written (the bridge never confirms); at 4.5 s the session is closed, nothing more is
   written; no new opening of the same door for 10 s. The doors are read at
   start, on a scan and on "Test the connection", again after 1 min, 5 min,
   then every 30 min on a failure.
@@ -163,3 +170,38 @@ up to date at the end of every milestone.
   no end-to-end test in a container; never run against a real bridge, Vedo
   or intercom; the ICONA frames are checked against comelit-client's source
   read by hand (its TypeScript was not run).
+
+## Decisions after the review (2026-10-18)
+
+- **A (blocking) - "Test the connection" and the options**: `configUpdated`
+  keeps the raw configuration in both branches and applies the four options
+  (`allow_setpoint`, `allow_arm`, `allow_disarm`, `allow_door`) to the
+  configuration in use before anything is awaited; "Test the connection"
+  always reads `gladys.getConfig()` again and restarts with it. An option
+  switched off stays off across the button.
+- **B - door entry reassigned**: the discovery keeps `apt_address` and
+  `output_index` in the params of each door device; the opening compares the
+  entry read in the same session with them (or with the last doors read);
+  a difference is refused ("the intercom configuration changed, scan
+  again"), no frame written, and the doors are read again.
+- **C - alarm confirmation**: only a state that differs from the one read
+  before the send can confirm; a disarm needs disarmed, no alarm, no entry
+  nor exit delay.
+- **D - older Vedo firmware**: a 200 goes through the same confirmation
+  read; not shown in time: "sent, without confirmation" and a read back.
+- **E - 401 / 403 to `login.cgi`**: a refused PIN, persisted stop.
+- **F - doors**: always "sent, without confirmation".
+- **G - "close everything"**: a status read asked of the bridge after a
+  command arrived, with no command sent to that object since, serves it
+  (several commands of one type share one read); the bridge calls no longer
+  wait 250 ms (only the Vedo calls; thermostats 1.5 s). Eight shutters closed
+  at once all leave. A shutter opening during it is refused (documented).
+- **M2** stops noted synchronously in the event handler, then saved; **M3**
+  10 cookies at most; **M4** the "plugs" are every `other` object and obey
+  the "turn everything off" (docs warn about gates and pumps); **M5** the
+  manifest description names the doors; **M6** docs: the session cookie
+  travels in clear too; **M7** the arm P1 button follows `p1_pres` like
+  P1 + P2 follows `p2_pres`; **M8** one log line for every command refused in
+  `setValue`; **M9** open / close refused while a stop guard is up; **M10** a
+  door missing from the configuration read again triggers a new reading of
+  the doors.

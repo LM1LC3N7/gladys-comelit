@@ -430,6 +430,7 @@ export async function openDoor({
   port,
   token,
   doorId,
+  verify,
   ready,
   onSent,
   connect,
@@ -452,6 +453,8 @@ export async function openDoor({
     if (!door) {
       throw new ComelitError(`Intercom: door ${doorId} not in its configuration`, 'missing');
     }
+    // The entry read now must still be the door the device was made for.
+    verify?.(door);
     await session.json('INFO', (id) => frames.serverInfo(id));
     ready();
     const ctpp = await session.channel('CTPP', vipAddress(config.vip));

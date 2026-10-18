@@ -79,6 +79,8 @@ export class ComelitClient extends EventEmitter {
     this.ready = false;
     this.failures = 0;
     this.cookies = new Map();
+    /** kind -> the last status read: { at (written), generation, status, val }. */
+    this.lastReads = new Map();
     this.queue = [];
     this.inflight = undefined;
     this.lastAt = undefined;
@@ -145,6 +147,7 @@ export class ComelitClient extends EventEmitter {
     this.opening = false;
     this.vedo = 'off';
     this.cookies.clear();
+    this.lastReads.clear();
     if (this.pumpTimer) {
       this.timers.clearTimeout(this.pumpTimer);
       this.pumpTimer = undefined;
@@ -229,7 +232,12 @@ export class ComelitClient extends EventEmitter {
       path: 'login.cgi',
       form: { [field]: pin },
       label: `login.cgi ${field}=<PIN>`,
+      vedo: which === 'vedo',
     });
+    // A clear "not allowed" to the PIN posted: a refusal, never tried again.
+    if (res.status === 401 || res.status === 403) {
+      throw refusedError(which === 'bridge' ? 'Bridge PIN' : 'Vedo PIN');
+    }
     if (res.status !== 200) {
       throw new ComelitError(`login.cgi answered HTTP ${res.status}`, 'answer', {
         sent: true,
@@ -253,14 +261,14 @@ export class ComelitClient extends EventEmitter {
       if (res.status === 401 || res.status === 403) return false;
       return bridgeLogged(this.page(res, 'login.json'));
     }
-    const res = await this.call({ path: `user/${this.vedoSuffix}area_stat.json` });
+    const res = await this.call({ path: `user/${this.vedoSuffix}area_stat.json`, vedo: true });
     if (res.status === 401 || res.status === 403) return false;
     return vedoLogged(this.page(res, 'area_stat'));
   }
 
   /** aiocomelit `_check_new_firmware`: the new Vedo firmware takes its actions by POST. */
   async checkNewFirmware() {
-    const res = await this.call({ path: `${this.vedoSuffix}index.shtml` });
+    const res = await this.call({ path: `${this.vedoSuffix}index.shtml`, vedo: true });
     const fresh = res.text.includes('www.comelitgroup.com');
     if (fresh !== this.newFirmware) {
       this.logger.info(`${this.label}: ${fresh ? 'new' : 'older'} Vedo firmware`);
@@ -421,8 +429,19 @@ export class ComelitClient extends EventEmitter {
   /** The statuses of one object type, emitted as 'status'. */
   async readStatus(kind, options = {}) {
     const type = BRIDGE_TYPES[kind];
-    const res = await this.call({ path: 'user/icon_status.json', query: { type }, ...options });
+    let writtenAt;
+    const res = await this.call({
+      path: 'user/icon_status.json',
+      query: { type },
+      ...options,
+      onWritten: () => {
+        writtenAt = this.now();
+      },
+    });
     const parsed = parseStatus(this.page(res, `icon_status ${type}`), type);
+    // When it was asked of the bridge: a command that arrived before can
+    // decide on it (several commands of one type share one read).
+    this.lastReads.set(kind, { at: writtenAt, generation: this.generation, ...parsed });
     this.emit('status', { kind, ...parsed });
     return parsed;
   }
@@ -529,6 +548,7 @@ export class ComelitClient extends EventEmitter {
     notBefore,
     onWritten,
     timeout = this.timings.requestTimeout,
+    vedo,
   }) {
     return new Promise((resolve, reject) => {
       ticket.written = false;
@@ -550,6 +570,13 @@ export class ComelitClient extends EventEmitter {
         notBefore,
         onWritten,
         timeout,
+        // The Vedo calls keep aiocomelit's 250 ms apart; the bridge's own calls do not wait.
+        vedo:
+          vedo ??
+          (this.kind === 'vedo' ||
+            path.includes('vedo_') ||
+            query?.vedo !== undefined ||
+            form?.vedo_param !== undefined),
         resolve,
         reject,
         state: 'queued',
@@ -592,7 +619,7 @@ export class ComelitClient extends EventEmitter {
     if (this.queue.length === 0) return;
     const entry = this.queue[0];
     const ready = Math.max(
-      this.lastAt === undefined ? 0 : this.lastAt + this.timings.gap,
+      entry.vedo && this.lastVedoAt !== undefined ? this.lastVedoAt + this.timings.gap : 0,
       entry.notBefore ?? 0,
     );
     if (ready > now) {
@@ -675,6 +702,7 @@ export class ComelitClient extends EventEmitter {
       entry.state = 'done';
       this.inflight = undefined;
       this.lastAt = this.now();
+      if (entry.vedo) this.lastVedoAt = this.lastAt;
       this.pump();
     }
   }
@@ -687,6 +715,8 @@ export class ComelitClient extends EventEmitter {
     for (const line of lines.slice(0, 10)) {
       const match = /^\s*([A-Za-z0-9_.-]{1,64})=([^;]{0,512})/.exec(String(line));
       if (!match) continue;
+      // At most 10 cookies kept: a peer cannot grow the jar.
+      if (!this.cookies.has(match[1]) && this.cookies.size >= 10) continue;
       this.cookies.set(match[1], match[2]);
       got = true;
     }

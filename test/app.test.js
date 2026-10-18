@@ -35,7 +35,7 @@ export const FAST = {
   testWait: 1_000,
 };
 
-async function setup(t, { config = {}, bridge, icona, store, devices } = {}) {
+async function setup(t, { config = {}, bridge, icona, store, devices, timings = FAST } = {}) {
   const gladys = createFakeGladys({ config: { ...BASE, ...config }, devices });
   const fake = bridge ?? new FakeBridge();
   const intercom = icona ?? new FakeIcona();
@@ -47,7 +47,7 @@ async function setup(t, { config = {}, bridge, icona, store, devices } = {}) {
     transport: fake.transport,
     connectIcona: intercom.connect,
     store: memory,
-    timings: FAST,
+    timings,
   });
   registerHandlers(gladys, app, logger);
   await gladys.connect();
@@ -254,10 +254,15 @@ test('arm: decided on the area read now, once, credited to Gladys; buttons only'
   await up(ctx);
   const before = ctx.fake.log.length;
   assert.equal((await ctx.set('area', 0, 'arm-p1', 1)).success, true);
-  assert.deepEqual(ctx.fake.log.slice(before), [
-    'GET user/vedo_area_stat.json',
-    'GET user/action.cgi?vedo=1&p1=0&force=0',
-  ]);
+  assert.deepEqual(
+    ctx.fake.log.slice(before),
+    [
+      'GET user/vedo_area_stat.json',
+      'GET user/action.cgi?vedo=1&p1=0&force=0',
+      'GET user/vedo_area_stat.json',
+    ],
+    'read, sent, then confirmed by a second read',
+  );
   await sleep(60);
   await settle();
   assert.equal(ctx.state(ctx.ids('area', 0).feature('mode')), 'Armed (partial P1)');
@@ -520,7 +525,9 @@ test('door: off by default; when allowed, decided on the fresh configuration, gu
   await ctx.app.queues.get('door');
   ctx.intercom.received = [];
   const ack = await ctx.set('door', 1, 'open', 1);
-  assert.equal(ack.success, true, ack.error);
+  // Every frame written, still no confirmation from the bridge.
+  assert.equal(ack.success, false);
+  assert.match(ack.error, /Sent, without confirmation/);
   assert.deepEqual(ctx.intercom.log, [
     'open UAUT',
     'access',
@@ -607,6 +614,110 @@ test('a Vedo IP of its own: its own session, its own link device', async (t) => 
   vedo.areas.armed[1] = 4;
   const ack = await ctx.set('area', 1, 'disarm', 1);
   assert.equal(ack.success, true, ack.error);
-  assert.equal(vedo.log.at(-1), 'GET action.cgi?vedo=1&dis=1&force=0');
+  assert.ok(vedo.log.includes('GET action.cgi?vedo=1&dis=1&force=0'));
   assert.ok(ctx.device(ctx.gladys.externalIds('vedo', 'comelit').device));
+});
+
+test('"Test the connection" never brings back an option switched off', async (t) => {
+  const ctx = await setup(t, { config: { allow_arm: true } });
+  await up(ctx);
+  await ctx.gladys.fake.configUpdated({ ...BASE, allow_arm: false });
+  assert.equal(ctx.app.config.allowArm, false, 'applied at once');
+  // The bridge is cut: the button restarts the session.
+  ctx.fake.hook = async () => ({
+    error: Object.assign(new Error('cut'), { kind: 'offline', sent: false }),
+  });
+  ctx.app.bridge.lost(ctx.app.bridge.generation, 'cut');
+  await settle();
+  ctx.fake.hook = undefined;
+  const result = await ctx.gladys.fake.action('test_connection');
+  assert.equal(result.success, true, result.error);
+  assert.equal(ctx.app.config.allowArm, false, 'still off after the restart');
+  await up(ctx);
+  const ack = await ctx.set('area', 0, 'arm-total', 1);
+  assert.match(ack.error, /Arming is disabled/);
+  assert.equal(commands(ctx).length, 0);
+});
+
+test('a door given to another output in the intercom: refused, nothing written, read again', async (t) => {
+  const config = {
+    intercom_host: '192.0.2.11',
+    intercom_token: 'icona-token-0123456789',
+    allow_door: true,
+  };
+  const ctx = await setup(t, { config });
+  await up(ctx);
+  await until(() => ctx.app.doorState === 'ok');
+  await ctx.app.chain;
+  const params = ctx.device(ctx.ids('door', 1).device).params;
+  assert.deepEqual(
+    params.filter((p) => p.name !== 'door'),
+    [
+      { name: 'apt_address', value: 'SB100001' },
+      { name: 'output_index', value: '2' },
+    ],
+  );
+  ctx.intercom.configuration.vip['user-parameters']['opendoor-address-book'][0]['output-index'] = 3;
+  ctx.intercom.received = [];
+  const ack = await ctx.set('door', 1, 'open', 1);
+  assert.match(ack.error, /intercom configuration changed/);
+  assert.ok(!ctx.intercom.log.some((l) => l.startsWith('bin')), 'no frame of the opening');
+  await until(() => ctx.app.model.doors.get(1).outputIndex === 3);
+});
+
+test('alarm: a 200 alone, or a state read that did not change, is no confirmation', async (t) => {
+  const ctx = await setup(t, { config: { allow_arm: true, allow_disarm: true } });
+  await up(ctx);
+  // Older firmware: 200, but the Vedo did nothing.
+  ctx.fake.hook = async (entry) =>
+    entry.path.includes('action.cgi')
+      ? { response: { status: 200, headers: {}, text: '' } }
+      : undefined;
+  const arm = await ctx.set('area', 0, 'arm-total', 1);
+  assert.match(arm.error, /Sent, without confirmation/);
+  // Disarm: the alarm still rings after it, nothing changed.
+  ctx.fake.areas.armed[0] = 0;
+  ctx.fake.areas.alarm[0] = 1;
+  await ctx.app.bridge.readAreas();
+  const disarm = await ctx.set('area', 0, 'disarm', 1);
+  assert.match(disarm.error, /Sent, without confirmation/);
+  ctx.fake.hook = undefined;
+});
+
+test('"close everything": eight shutters at once all leave in time', async (t) => {
+  const bridge = new FakeBridge();
+  bridge.objects.shutter = {
+    desc: Array.from({ length: 8 }, (_, i) => `Volet ${i + 1}`),
+    status: Array(8).fill(0),
+  };
+  const timings = { ...FAST, gap: 250, sendBy: 3_500, answerBy: 4_500, readBefore: 1_500 };
+  const ctx = await setup(t, { bridge, timings });
+  await up(ctx);
+  const acks = await Promise.all(
+    Array.from({ length: 8 }, (_, i) => ctx.set('shutter', i, 'state', -1)),
+  );
+  assert.deepEqual(
+    acks.map((a) => a.success),
+    Array(8).fill(true),
+    JSON.stringify(acks.map((a) => a.error)),
+  );
+  assert.deepEqual(bridge.objects.shutter.status, Array(8).fill(2), 'all closing');
+});
+
+test('arm buttons follow P1 and P2 of each area; open refused while a stop is pending', async (t) => {
+  const bridge = new FakeBridge();
+  bridge.areas.p1_pres = [1, 0, 0];
+  const ctx = await setup(t, { bridge });
+  await up(ctx);
+  const keys = (i) =>
+    ctx.device(ctx.ids('area', i).device).features.map((f) => f.external_id.split(':').at(-1));
+  assert.ok(keys(0).includes('arm-p1'));
+  assert.ok(!keys(1).includes('arm-p1'));
+  ctx.fake.objects.shutter.status[0] = 2;
+  assert.equal((await ctx.set('shutter', 0, 'state', 0)).success, true);
+  // The fake shutter has not stopped yet.
+  ctx.fake.objects.shutter.status[0] = 2;
+  const open = await ctx.set('shutter', 0, 'state', 1);
+  assert.match(open.error, /previous stop/);
+  assert.ok(ctx.logger.lines.some((l) => /Command REFUSED \(.*shutter:0:state\)/.test(l)));
 });

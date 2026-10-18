@@ -21,7 +21,11 @@ Cette intégration relie une installation **Comelit** à Gladys Assistant,
 
 - **Pont Comelit** : connecté ou non.
 - **Lumières** (allumer, éteindre) et **prises** (marche, arrêt), avec leur
-  état.
+  état. Les « prises » sont **tous les objets « autres »** (`other`) du pont,
+  publiés comme interrupteurs : ils obéissent aux « tout éteindre » des
+  assistants vocaux et des scènes. Une sortie « autre » peut piloter un
+  portail, une pompe ou une chaudière : vérifiez ce qu'il y a derrière chacune
+  avant de les créer dans Gladys.
 - **Volets** : ouvrir, fermer, arrêter (une fonction « volet », jamais un
   interrupteur). Le pont ne donne pas la position, seulement le mouvement.
 - **Thermostats** : température mesurée et **consigne**. Régler la consigne
@@ -72,7 +76,9 @@ base, jamais réaffichés dans l'interface, envoyés seulement au pont, à la
 Vedo ou au pont de l'interphone. Ils n'apparaissent jamais dans les journaux
 ni dans `/data`. Attention : le pont et la Vedo ne parlent que HTTP, sans
 protection, et le protocole de l'interphone non plus : **ils circulent en
-clair sur votre réseau local**. Protégez votre réseau (Wi-Fi invité séparé
+clair sur votre réseau local**, comme le cookie de session que le pont donne
+après la connexion (qui le lit peut piloter le pont tant que la session
+dure). Protégez votre réseau (Wi-Fi invité séparé
 pour les appareils dont vous n'êtes pas sûr).
 
 Le bouton **Tester la connexion** relance ce qui est arrêté (code refusé
@@ -101,14 +107,26 @@ compris), attend les connexions et indique ce qui a été trouvé.
   sans réponse claire (pas de réponse, réponse inattendue) est annoncée
   « envoyée, sans confirmation » et l'état est relu : elle n'est jamais
   annoncée « non envoyée ». Seul un refus net du pont (HTTP 4xx) est annoncé
-  « refusé ». Le nouveau micrologiciel de la Vedo répond 404 à chaque action
-  (aiocomelit le note) : l'intégration relit alors l'état aussitôt et
-  n'annonce la réussite que si l'état la montre.
+  « refusé ».
+- Pour l'alarme, la réponse HTTP ne prouve rien : l'ancien micrologiciel de
+  la Vedo répond 200 et le nouveau 404 à chaque action (aiocomelit le note).
+  L'intégration relit donc l'état aussitôt et n'annonce la réussite que si
+  l'état lu **a changé** et montre le résultat (désarmé : plus d'alarme ni de
+  délai en cours) ; sinon « envoyée, sans confirmation ».
+- Plusieurs commandes de volets ou de thermostats arrivées ensemble (« tout
+  fermer ») partagent une même relecture, faite après leur arrivée, tant
+  qu'aucune commande n'est partie vers ce volet depuis. Les appels au pont
+  s'enchaînent sans pause ; seuls les appels à la Vedo gardent 250 ms entre
+  eux, et les thermostats 1,5 s, comme aiocomelit.
+- Pendant un « tout fermer », un volet qui est en train de s'ouvrir est
+  refusé (la commande l'arrêterait au lieu de le fermer) : relancez-le une
+  fois arrêté.
 - Arrêter un volet envoie la commande du sens inverse (c'est ainsi que le
   pont arrête un volet) ; aucun second arrêt ne part tant que le pont ne
   montre pas le volet arrêté (15 s au plus), sinon il repartirait dans
-  l'autre sens. Ouvrir un volet qui se ferme (ou l'inverse) est refusé :
-  arrêtez-le d'abord.
+  l'autre sens ; ouvrir ou fermer ce volet est aussi refusé pendant ce temps.
+  Ouvrir un volet qui se ferme (ou l'inverse) est refusé : arrêtez-le
+  d'abord.
 - Chaque commande, envoyée ou refusée, est écrite dans les journaux de
   l'intégration.
 
@@ -126,19 +144,23 @@ ouverte. Ne l'activez que si vous acceptez ce risque, et testez en présence.**
 - Les portes sont lues dans le carnet d'adresses du pont de l'interphone
   (« opendoor »). Les actionneurs et les entrées ne sont pas pris en charge
   dans cette version.
-- Chaque ouverture ouvre une courte connexion, relit la configuration du pont
-  (la porte doit y être), vérifie l'option et le délai juste avant la première
-  trame d'ouverture, puis écrit les trames de comelit-client. Le pont ne
-  donne aucune confirmation : Gladys affiche une réussite quand toutes les
-  trames sont parties.
+- Chaque ouverture ouvre une courte connexion et relit la configuration du
+  pont : la porte doit y être, avec la même adresse et la même sortie qu'à la
+  découverte (gardées dans les paramètres de l'appareil). Sinon : refus
+  « configuration de l'interphone changée, relancez une recherche », aucune
+  trame, et les portes sont relues. L'intégration vérifie ensuite l'option et
+  le délai juste avant la première trame d'ouverture, puis écrit les trames
+  de comelit-client.
+- Le pont ne donne aucune confirmation : **Gladys répond toujours « envoyée,
+  sans confirmation »**, même quand toutes les trames sont parties.
 - Une porte n'est pas rouverte depuis Gladys dans les 10 secondes.
 - Si le pont refuse le jeton, l'interphone s'arrête et ne réessaie pas tout
   seul.
 
 ## Connexion et code refusé
 
-- **Une seule session vers le pont** : une requête à la fois, au moins
-  250 ms entre deux, les commandes avant les lectures.
+- **Une seule session vers le pont** : une requête à la fois, les commandes
+  avant les lectures, 250 ms au moins entre deux appels à la Vedo.
 - Sur une coupure, les nouveaux essais sont espacés : 10 s, 30 s, 1 min,
   2 min, puis toutes les 5 minutes.
 - **Si le pont refuse son code, l'intégration s'arrête** et ne réessaie pas
@@ -148,8 +170,9 @@ ouverte. Ne l'activez que si vous acceptez ce risque, et testez en présence.**
   Corrigez le code puis enregistrez, ou cliquez sur « Tester la connexion ».
   Le fichier `/data/comelit-state.json` garde seulement l'adresse concernée,
   jamais le code.
-- Un refus se reconnaît à une réponse du pont sans cookie de session, ou à
-  une session toujours absente 1,5 s après : un pont lent à ouvrir la session
+- Un refus se reconnaît à une réponse HTTP 401 ou 403 à l'envoi du code, à
+  une réponse sans cookie de session, ou à une session toujours absente
+  1,5 s après : un pont lent à ouvrir la session
   peut donc être pris pour un refus (l'intégration s'arrête alors, sans
   boucle ; « Tester la connexion » relance).
 

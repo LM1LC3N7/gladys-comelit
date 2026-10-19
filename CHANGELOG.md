@@ -10,6 +10,8 @@ the notes of the version's GitHub Release.
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-10-19
+
 ### Fixed
 
 - Alarm scene trigger lost when the zone is unknown: the SDK refuses an
@@ -92,5 +94,6 @@ the notes of the version's GitHub Release.
 - "Test the connection" on an empty configuration only fails, without
   changing the connection status.
 
-[Unreleased]: https://github.com/LM1LC3N7/gladys-comelit/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/LM1LC3N7/gladys-comelit/compare/v0.1.2...HEAD
+[0.1.2]: https://github.com/LM1LC3N7/gladys-comelit/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/LM1LC3N7/gladys-comelit/releases/tag/v0.1.1

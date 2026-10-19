@@ -9,6 +9,7 @@ import { ComelitApp } from '../src/app.js';
 import { TIMINGS } from '../src/constants.js';
 import { registerHandlers } from '../src/handlers.js';
 import { memoryStore } from '../src/store.js';
+import { StatePublisher, sceneData } from '../src/publisher.js';
 import { FakeBridge, FakeIcona, quietLogger, settle, sleep, until } from './helpers/fakeComelit.js';
 
 const BASE = {
@@ -312,6 +313,73 @@ test('keypad changes and alarms become scene events', async (t) => {
     key: 'disarmed',
     data: { area: '1', name: 'Maison', by_gladys: false },
   });
+});
+
+test('alarm_triggered reaches Gladys when the zone is unknown (zone: null)', async (t) => {
+  const ctx = await setup(t);
+  await up(ctx);
+  // An area alarm with no zone in alarm (keypad panic, tamper, wireless).
+  ctx.fake.areas.alarm[0] = 1;
+  await ctx.app.bridge.readZones();
+  await ctx.app.bridge.readAreas();
+  await settle();
+  assert.deepEqual(ctx.events().at(-1), {
+    key: 'alarm_triggered',
+    data: { area: '1', name: 'Maison', zone: null },
+  });
+  // A zone in alarm that the Vedo does not list (not present).
+  ctx.fake.zones.status[3] = '0x0023';
+  ctx.fake.areas.alarm[1] = 1;
+  await ctx.app.bridge.readZones();
+  await ctx.app.bridge.readAreas();
+  await settle();
+  assert.deepEqual(ctx.events().at(-1), {
+    key: 'alarm_triggered',
+    data: { area: '2', name: 'Garage', zone: null },
+  });
+});
+
+test('scene event data: undefined becomes null for every event, other values kept', async () => {
+  const events = [];
+  const publisher = new StatePublisher({
+    gladys: { publishSceneEvent: async (key, data) => events.push({ key, data }) },
+    logger: quietLogger(),
+  });
+  await publisher.sceneEvent('alarm_triggered', { area: '1', name: undefined, zone: undefined });
+  await publisher.sceneEvent('armed', { area: '1', mode: undefined, by_gladys: false });
+  assert.deepEqual(events, [
+    { key: 'alarm_triggered', data: { area: '1', name: null, zone: null } },
+    { key: 'armed', data: { area: '1', mode: null, by_gladys: false } },
+  ]);
+  assert.deepEqual(
+    sceneData({
+      a: 0,
+      b: '',
+      c: false,
+      d: null,
+      e: undefined,
+      f: Number.NaN,
+      g: Infinity,
+      h: -Infinity,
+      i: { zone: 1 },
+      j: [1],
+      k: 12n,
+    }),
+    {
+      a: 0,
+      b: '',
+      c: false,
+      d: null,
+      e: null,
+      f: null,
+      g: null,
+      h: null,
+      i: null,
+      j: null,
+      k: null,
+    },
+  );
+  publisher.stop({ final: true });
 });
 
 test('an option switched off while the command waits is refused, nothing sent', async (t) => {

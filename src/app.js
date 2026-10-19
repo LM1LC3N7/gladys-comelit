@@ -751,7 +751,11 @@ export class ComelitApp {
     } else if (event.type === 'alarm') {
       const zone = this.zoneInAlarm();
       this.logger.warn(`Vedo: ALARM area ${area}${zone ? ` zone ${zone}` : ''}`);
-      await this.publisher.sceneEvent(SCENE_TRIGGERS.ALARM_TRIGGERED, { area, name, zone });
+      await this.publisher.sceneEvent(SCENE_TRIGGERS.ALARM_TRIGGERED, {
+        area,
+        name: name ?? null,
+        zone: zone ?? null,
+      });
     }
   }
 

@@ -1,6 +1,6 @@
 {
   "name": "gladys-comelit",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "private": true,
   "description": "Gladys Assistant external integration for Comelit SimpleHome (lights, shutters, plugs, thermostats), the Vedo alarm and the intercom doors, locally. Unofficial, not affiliated with Comelit.",
   "type": "module",

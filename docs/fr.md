@@ -91,19 +91,25 @@ compris), attend les connexions et indique ce qui a été trouvé.
   sirènes et un appel de votre télésurveillance. Un armement ne baisse jamais
   la protection : un armement dont le mode est déjà couvert n'envoie rien
   (total couvre tout, P1 + P2 couvre P1 et P2, P1 seulement P1 et P2
-  seulement P2), et il n'est jamais forcé. Il passe devant les relectures de confirmation, le polling et un
+  seulement P2), et il n'est jamais forcé. Un armement qui monte la
+  protection part sur un secteur déjà armé : total sur P1, P2 ou P1 + P2, et
+  P1 + P2 sur P1 ou P2 ; il n'est réussi que si l'état relu montre le mode
+  demandé, sinon « envoyé, sans confirmation ». Il passe devant les relectures de confirmation, le polling et un
   désarmement en attente sur la ligne ; les armements d'une scène (« tout
   armer ») partagent une seule lecture d'état et partent tous, même sur une
   Vedo lente ; un armement total part même si l'état du secteur est illisible ;
   un armement retire un désarmement du même secteur encore en attente. Armer
   reste refusé, sans rien envoyer, dans ces seuls cas : alarme injoignable ;
   secteur inconnu, ou P1 / P2 absent dessus ; délai d'entrée ou de sortie en
-  cours ; secteur armé dans un mode qui ne couvre pas celui demandé (P2 pour
-  un armement P1, P1 pour un armement total : la Vedo arme un secteur
-  désarmé, désarmez-le d'abord) ; alarme en cours ; armement P1 ou P1 + P2
-  dont l'état est illisible sauf si le dernier état connu est désarmé, ou
-  juste après un désarmement dont l'effet n'est pas encore visible ; temps
-  écoulé (ligne occupée plus de 4,3 s).
+  cours, ou alarme en cours (un armement pourrait relancer le délai ou
+  acquitter l'alarme : ce que fait alors la Vedo n'est pas connu,
+  l'intégration ne prend pas ce risque) ; armement P1 sur un secteur armé P2
+  (deux groupes de zones distincts : la Vedo pourrait remplacer P2 par P1 et
+  laisser les zones de P2 désarmées ; désarmez-le d'abord) ; armement P1 dont
+  l'état est illisible sauf si le dernier état connu est désarmé, armement
+  P1 + P2 sauf s'il est désarmé, P1 ou P2 ; armement partiel juste après un
+  désarmement dont l'effet n'est pas encore visible, sauf P1 + P2 sur un
+  secteur lu P1 ou P2 ; temps écoulé (ligne occupée plus de 4,3 s).
 - **Désarmer est désactivé par défaut**. Une fois « Autoriser le désarmement » cochée, **tout utilisateur
   de Gladys, toute scène et l'application mobile Gladys peuvent désarmer sans
   taper de code** : le code de la configuration suffit. Ne l'autorisez que si

@@ -129,18 +129,25 @@ up to date at the end of every milestone.
   if that state differs from the one read before the send and shows the
   result (disarmed: no alarm, no entry or exit delay); else "sent, without
   confirmation" and a read back.
-- **Alarm**: arming refused unless the area is disarmed with no delay nor
-  alarm running; already in the mode asked: nothing sent; disarming sends
-  unless disarmed with nothing running. Never forced (`force=0`); HA passes
-  the anomaly flag as `force`, here an area the Vedo will not arm stays
-  disarmed. Arming needs no option (2026-11-24, wave 16 r1): it is
-  protective, goes first on the alarm's line (`priority: 'protective'`),
-  the arms arriving together share one area read, an arm total leaves even
-  on an unreadable state, a partial arm only when the last state known is
-  disarmed (inclusion rule: total covers everything, P1 + P2 covers P1 and
-  P2, P1 only P1, P2 only P2; anything else armed: "disarm first"), an arm withdraws the disarms of its area still waiting, and
-  it may be written up to `armSendBy` (4.3 s). Disarming is an option, off
-  by default.
+- **Alarm**: arming refused while a delay or an alarm runs (an arm could
+  restart the delay or reset the alarm: unknown on the Vedo, to check at
+  milestone 2); already in a mode that covers the one asked: nothing sent;
+  disarming sends unless disarmed with nothing running. Never forced
+  (`force=0`); HA passes the anomaly flag as `force`, here an area the Vedo
+  will not arm stays disarmed. Arming needs no option (2026-11-24, wave 16
+  r1): it is protective, goes first on the alarm's line
+  (`priority: 'protective'`), the arms arriving together share one area
+  read, an arm total leaves even on an unreadable state, an arm withdraws the disarms of
+  its area still waiting, and it may be written up to `armSendBy` (4.3 s).
+  Inclusion rule (r2-r4): total covers everything, P1 + P2 covers P1 and P2,
+  P1 only P1, P2 only P2. An arm whose mode covers the one armed raises the
+  protection and is sent (total over a partial, P1 + P2 over P1 or P2: never
+  blocked behind the disarm option), a success only once the read shows the
+  mode asked; "disarm first" only where neither covers the other (P1 over
+  P2: the Vedo might replace P2 by P1). On an unreadable state, or a read
+  that may predate a disarm just written, a partial arm goes only when it
+  raises the last state known (or that state is disarmed). Disarming is an
+  option, off by default.
 - **Shutters**: open / close are absolute but decided on a fresh read:
   moving the other way is refused (the bridge would only stop it). Stop sends
   the reverse of the movement read (Home Assistant's way); a guard (with its

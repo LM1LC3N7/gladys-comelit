@@ -273,11 +273,13 @@ test('arm: decided on the area read now, once, credited to Gladys; buttons only'
     key: 'armed',
     data: { area: '1', name: 'Maison', mode: 'armed_p1', by_gladys: true },
   });
-  // Same mode: nothing sent. Another mode: refused, disarm first.
+  // Same mode: nothing sent. Total covers P1: sent, it raises the protection.
   assert.equal((await ctx.set('area', 0, 'arm-p1', 1)).success, true);
-  const other = await ctx.set('area', 0, 'arm-total', 1);
-  assert.match(other.error, /armed in another mode/);
   assert.equal(commands(ctx).length, 1);
+  const raised = await ctx.set('area', 0, 'arm-total', 1);
+  assert.equal(raised.success, true, raised.error);
+  assert.equal(commands(ctx).at(-1), 'GET user/action.cgi?vedo=1&tot=0&force=0');
+  assert.equal(ctx.fake.areas.armed[0], 4);
   // A value other than a push is no command.
   assert.equal((await ctx.set('area', 0, 'disarm', 0)).success, false);
   assert.equal((await ctx.set('area', 0, 'disarm', 1)).success, true);
@@ -701,7 +703,7 @@ test('an arm withdraws a disarm of its area still waiting: nothing sent for it',
   assert.equal(ctx.fake.areas.armed[0], 4, 'still armed');
 });
 
-test('a partial arm on an unreadable state goes only when the last state known protects less', async (t) => {
+test('a partial arm on an unreadable state goes only when it raises the last state known', async (t) => {
   const ctx = await setup(t);
   await up(ctx);
   const garbage = () => {
@@ -735,47 +737,127 @@ test('a partial arm on an unreadable state goes only when the last state known p
   assert.equal(commands(ctx).length, 2);
 });
 
-test('an arm on an armed area: nothing sent when covered, "disarm first" otherwise', async (t) => {
+test('an arm on an armed area: nothing sent when covered, sent when it raises, "disarm first" otherwise (M, N)', async (t) => {
+  // Default options: disarming is off, and raising the protection never needs it.
   const ctx = await setup(t);
   await up(ctx);
-  const armed = async (level, key) => {
+  const sent = (from) => commands(ctx).slice(from);
+  const armed = async (level, key, fields = {}) => {
     ctx.fake.areas.armed[0] = level;
+    for (const [field, value] of Object.entries(fields)) ctx.fake.areas[field][0] = value;
     const before = commands(ctx).length;
     const ack = await ctx.set('area', 0, key, 1);
-    return { ack, sent: commands(ctx).length - before };
+    for (const field of Object.keys(fields)) ctx.fake.areas[field][0] = 0;
+    return { ack, sent: sent(before) };
   };
   // P2 does not contain P1: refused, nothing sent (never a false "done").
   const p2 = await armed(2, 'arm-p1');
   assert.equal(p2.ack.success, false);
   assert.match(p2.ack.error, /armed in another mode: disarm it first/);
-  assert.equal(p2.sent, 0);
-  // P1 + P2 and total cover P1: nothing sent, success.
-  for (const level of [3, 4]) {
-    const covered = await armed(level, 'arm-p1');
+  assert.deepEqual(p2.sent, []);
+  // Covered: nothing sent, success.
+  for (const [level, key] of [
+    [3, 'arm-p1'],
+    [4, 'arm-p1'],
+    [4, 'arm-p12'],
+  ]) {
+    const covered = await armed(level, key);
     assert.equal(covered.ack.success, true, covered.ack.error);
-    assert.equal(covered.sent, 0, `level ${level}`);
+    assert.deepEqual(covered.sent, [], `${key} on level ${level}`);
   }
-  // P1 does not cover P1 + P2 nor total: disarm first.
-  for (const key of ['arm-p12', 'arm-total']) {
-    const weaker = await armed(1, key);
-    assert.equal(weaker.ack.success, false, key);
-    assert.match(weaker.ack.error, /disarm it first/);
-    assert.equal(weaker.sent, 0);
+  // M: an arm that raises the protection is sent, a success once the Vedo shows it.
+  for (const [level, key, action, shown] of [
+    [1, 'arm-total', 'tot', 4],
+    [2, 'arm-total', 'tot', 4],
+    [3, 'arm-total', 'tot', 4],
+    [1, 'arm-p12', 'p12', 3],
+    [2, 'arm-p12', 'p12', 3],
+  ]) {
+    const raised = await armed(level, key);
+    assert.equal(raised.ack.success, true, `${key} on level ${level}: ${raised.ack.error}`);
+    assert.deepEqual(raised.sent, [`GET user/action.cgi?vedo=1&${action}=0&force=0`]);
+    assert.equal(ctx.fake.areas.armed[0], shown, `${key} on level ${level}`);
   }
-  // P2 known, state unreadable, arm P1: the same refusal, same message.
-  ctx.fake.areas.armed[0] = 2;
-  await ctx.app.alarmClient().readAreas();
-  await settle();
-  assert.equal(ctx.app.model.vedo.areas.get(0).status.mode, 'armed_p2');
+  // The Vedo still shows P1 after the arm total: "sent, without confirmation".
   ctx.fake.hook = async (entry) =>
-    entry.path.includes('area_stat')
-      ? { response: { status: 200, headers: {}, text: 'not json' } }
+    entry.path.includes('action.cgi')
+      ? { response: { status: 200, headers: {}, text: '' } }
       : undefined;
-  const unreadable = await ctx.set('area', 0, 'arm-p1', 1);
+  const ignored = await armed(1, 'arm-total');
   ctx.fake.hook = undefined;
-  assert.equal(unreadable.success, false);
-  assert.match(unreadable.error, /armed in another mode: disarm it first/);
-  assert.equal(commands(ctx).length, 0);
+  assert.match(ignored.ack.error, /Sent, without confirmation/);
+  assert.deepEqual(ignored.sent, ['GET user/action.cgi?vedo=1&tot=0&force=0']);
+  // A delay or an alarm running: refused even when it would raise.
+  const delay = await armed(1, 'arm-total', { in_time: 1 });
+  assert.match(delay.ack.error, /entry or exit delay is running/);
+  const alarm = await armed(1, 'arm-total', { alarm: 1 });
+  assert.match(alarm.ack.error, /alarm is in progress/);
+  const exit = await armed(0, 'arm-total', { out_time: 1 });
+  assert.match(exit.ack.error, /entry or exit delay is running/);
+  assert.deepEqual([...delay.sent, ...alarm.sent, ...exit.sent], []);
+  // N: state unreadable, decided on the last state known.
+  const unreadable = async (level, key) => {
+    ctx.fake.areas.armed[0] = level;
+    await ctx.app.alarmClient().readAreas();
+    await settle();
+    assert.equal(ctx.app.model.vedo.areas.get(0).status.level, level);
+    ctx.fake.hook = async (entry) => {
+      if (!entry.path.includes('area_stat')) return undefined;
+      ctx.fake.hook = undefined;
+      return { response: { status: 200, headers: {}, text: 'not json' } };
+    };
+    const before = commands(ctx).length;
+    const ack = await ctx.set('area', 0, key, 1);
+    ctx.fake.hook = undefined;
+    return { ack, sent: sent(before) };
+  };
+  for (const [level, key, action] of [
+    [1, 'arm-total', 'tot'],
+    [1, 'arm-p12', 'p12'],
+    [2, 'arm-p12', 'p12'],
+  ]) {
+    const raised = await unreadable(level, key);
+    assert.equal(raised.ack.success, true, `${key} on level ${level}: ${raised.ack.error}`);
+    assert.deepEqual(raised.sent, [`GET user/action.cgi?vedo=1&${action}=0&force=0`]);
+  }
+  // P2 known, arm P1: the same refusal, same message, as on a state read.
+  const other = await unreadable(2, 'arm-p1');
+  assert.equal(other.ack.success, false);
+  assert.match(other.ack.error, /armed in another mode: disarm it first/);
+  assert.deepEqual(other.sent, []);
+  // Total known, arm P1 + P2: it might lower a total armed since, refused.
+  const lower = await unreadable(4, 'arm-p12');
+  assert.equal(lower.ack.success, false);
+  assert.match(lower.ack.error, /could not be read .* does not show the area disarmed/);
+  assert.deepEqual(lower.sent, []);
+});
+
+test('just after a disarm not seen yet: an arm that only adds zones goes, another partial one is refused', async (t) => {
+  const ctx = await setup(t, { config: { allow_disarm: true } });
+  await up(ctx);
+  // The Vedo takes the disarm (HTTP 200) but does not show it yet.
+  ctx.fake.hook = async (entry) =>
+    entry.path.includes('dis=0') ? { response: { status: 200, headers: {}, text: '' } } : undefined;
+  const afterDisarm = async (level, key) => {
+    ctx.fake.areas.armed[0] = level;
+    const disarms = () => commands(ctx).filter((l) => l.includes('dis=0')).length;
+    const before = disarms();
+    const disarm = ctx.set('area', 0, 'disarm', 1);
+    await until(() => disarms() > before);
+    const from = commands(ctx).length;
+    const ack = await ctx.set('area', 0, key, 1);
+    assert.match((await disarm).error, /Sent, without confirmation/);
+    return { ack, sent: commands(ctx).slice(from) };
+  };
+  // Read P1, maybe disarmed already: P1 + P2 raises it either way, sent.
+  const raised = await afterDisarm(1, 'arm-p12');
+  assert.equal(raised.ack.success, true, raised.ack.error);
+  assert.deepEqual(raised.sent, ['GET user/action.cgi?vedo=1&p12=0&force=0']);
+  // Read total, maybe disarmed already: "already armed" may be false, refused.
+  const covered = await afterDisarm(4, 'arm-p1');
+  assert.equal(covered.ack.success, false);
+  assert.match(covered.ack.error, /A disarm just left and is not seen yet/);
+  assert.deepEqual(covered.sent, []);
 });
 
 test('getConfig() failing at connection: tried again, then the module starts', async (t) => {
@@ -806,6 +888,48 @@ test('getConfig() failing at connection: tried again, then the module starts', a
   assert.ok(logger.lines.some((l) => l.includes('Start failed, trying again')));
   await until(() => app.bridgeOnline);
   assert.equal(app.started, true);
+});
+
+test('a reconnection while the start is tried again: one loop, one start', async (t) => {
+  const gladys = createFakeGladys({ config: BASE });
+  const logger = quietLogger();
+  const app = new ComelitApp({
+    gladys,
+    logger,
+    transport: new FakeBridge().transport,
+    connectIcona: new FakeIcona().connect,
+    store: memoryStore(),
+    timings: FAST,
+  });
+  t.after(() => app.stop({ final: true }));
+  let starts = 0;
+  const start = app.connected.bind(app);
+  app.connected = (...args) => {
+    starts += 1;
+    return start(...args);
+  };
+  // The SDK's own read at connection (call 1) answers; the handler's fail
+  // until the reconnection.
+  let calls = 0;
+  let failing = true;
+  const original = gladys.getConfig.bind(gladys);
+  gladys.getConfig = async () => {
+    calls += 1;
+    if (calls > 1 && failing) throw new Error('Gladys answered 500');
+    return original();
+  };
+  registerHandlers(gladys, app, logger, { retryWait: 100 });
+  const first = gladys.connect();
+  await until(() => calls === 2);
+  // Reconnected while the first loop waits: its read fails too, then Gladys answers.
+  gladys.emit('connected');
+  assert.equal(calls, 3);
+  failing = false;
+  await first;
+  await until(() => starts === 1);
+  await sleep(300);
+  assert.equal(starts, 1, 'the first loop ended with the reconnection');
+  assert.equal(calls, 4);
 });
 
 test('a Vedo IP of its own: its own session, its own link device', async (t) => {
@@ -1030,6 +1154,38 @@ test('"close everything" then "turn everything off" on a slow bridge: every comm
   await sleep(2_300);
   const reads = bridge.log.filter((l) => l.includes('icon_status.json?type=light')).length;
   assert.ok(reads <= 2, `one read back for the twelve lights, not ${reads}`);
+});
+
+test('a light switched off goes ahead of the reads waiting on the line', async (t) => {
+  const ctx = await setup(t);
+  await up(ctx);
+  let release;
+  const gate = new Promise((resolve) => {
+    release = resolve;
+  });
+  let held = false;
+  ctx.fake.hook = async (entry) => {
+    if (!held && entry.path.includes('icon_status')) {
+      held = true;
+      await gate;
+    }
+    return undefined;
+  };
+  const from = ctx.fake.log.length;
+  const holding = ctx.app.bridge.readStatus('light').catch((err) => err);
+  await until(() => held);
+  // A read asked before the command, ahead of the polls (a shutter command's own).
+  const waiting = ctx.app.bridge.readStatus('shutter', { priority: true }).catch((err) => err);
+  const off = ctx.set('light', 1, 'state', 0);
+  await until(() => ctx.app.bridge.queue.length === 2);
+  release();
+  assert.equal((await off).success, true);
+  await Promise.all([holding, waiting]);
+  assert.deepEqual(ctx.fake.log.slice(from), [
+    'GET user/icon_status.json?type=light',
+    'GET user/action.cgi?type=light&num0=1',
+    'GET user/icon_status.json?type=shutter',
+  ]);
 });
 
 test('the alarm queue is free once a command is sent: its confirmation never delays the next', async (t) => {

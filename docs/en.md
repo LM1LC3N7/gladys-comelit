@@ -84,18 +84,25 @@ included), waits for the connections and tells what was found.
   (a scene, a mistake) may raise a false alarm, the sirens and a call of your
   alarm monitoring company. An arm never lowers the protection: an arm whose
   mode is already covered sends nothing (total covers everything, P1 + P2
-  covers P1 and P2, P1 only P1 and P2 only P2), and it is never forced. It goes ahead of the
+  covers P1 and P2, P1 only P1 and P2 only P2), and it is never forced. An
+  arm that raises the protection is sent on an area already armed: total
+  over P1, P2 or P1 + P2, and P1 + P2 over P1 or P2; it is a success only
+  when the state read shows the mode asked, otherwise "sent, without
+  confirmation". It goes ahead of the
   confirmation reads, the polls and a disarm waiting on the line; the arms
   of a scene ("arm everything") share one state read and all leave, on a
   slow Vedo too; an arm total leaves even when the area state cannot be read;
   an arm withdraws a disarm of its area still waiting. Arming is still
   refused, nothing sent, in these cases only: the alarm unreachable; an
-  unknown area, or P1 / P2 absent on it; an entry or exit delay running; the
-  area armed in a mode that does not cover the one asked (P2 for an arm P1,
-  P1 for an arm total: the Vedo arms a disarmed area, disarm it first); an
-  alarm in progress; an arm P1 or P1 + P2 whose state cannot be read unless
-  the last state known is disarmed, or just after a disarm whose effect is
-  not seen yet; its time run out (the line stayed busy for
+  unknown area, or P1 / P2 absent on it; an entry or exit delay running, or
+  an alarm in progress (an arm could restart the delay or reset the alarm:
+  what the Vedo does then is not known, so the integration never risks it);
+  an arm P1 on an area armed P2 (two distinct groups of zones: the Vedo
+  might replace P2 by P1 and leave the zones of P2 disarmed; disarm it
+  first); an arm P1 whose state cannot be read unless the last state known
+  is disarmed, an arm P1 + P2 unless it is disarmed, P1 or P2; a partial
+  arm just after a disarm whose effect is not seen yet, unless it is P1 + P2
+  on an area read P1 or P2; its time run out (the line stayed busy for
   more than 4.3 s).
 - **Disarming is off by default**. Once "Allow disarming" is checked, **every Gladys user, every scene and the
   Gladys mobile app can disarm without typing any code**: the PIN of the

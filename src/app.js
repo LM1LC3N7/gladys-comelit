@@ -67,8 +67,10 @@ const emptyModel = () => ({ bridge: undefined, vedo: undefined, doors: undefined
 /**
  * What an armed mode covers: P1 and P2 are two distinct groups of zones (P2
  * does not contain P1); P1 + P2 covers both; total covers everything. An arm
- * whose mode is already covered sends nothing; an area armed in a mode that
- * does not cover it must be disarmed first (the Vedo arms a disarmed area).
+ * whose mode is already covered sends nothing; an arm whose mode covers the
+ * one armed only adds zones (total over a partial, P1 + P2 over P1 or P2)
+ * and is sent; where neither covers the other (P1 over P2), the Vedo might
+ * replace P2 by P1 and leave the zones of P2 disarmed: disarm first.
  */
 const COVERS = {
   armed_p1: ['armed_p1'],
@@ -77,6 +79,8 @@ const COVERS = {
   armed_total: ['armed_p1', 'armed_p2', 'armed_p12', 'armed_total'],
 };
 const covers = (have, want) => Boolean(COVERS[have]?.includes(want));
+/** Arming `want` on an area armed `have` only adds zones (never on a disarmed area). */
+const raises = (have, want) => covers(want, have) && !covers(have, want);
 
 const isButtonPush = (value) =>
   value === BUTTON_PUSH.PRESSED || value === String(BUTTON_PUSH.PRESSED);
@@ -1395,12 +1399,16 @@ export class ComelitApp {
    * read or a poll (its requests go first in the alarm's line), never blocked
    * by an unreadable state when it cannot lower the protection, written up to
    * armSendBy after it was asked. The arms arriving together share one area
-   * read. An arm withdraws the disarms of its area still waiting. What still
-   * refuses it (nothing sent): the alarm unreachable, an unknown area or an
-   * absent P1/P2, a delay running, the area armed in another, weaker mode, an
-   * alarm in progress, a partial arm on an unreadable state when the last
-   * state known protects as much, a disarm just written and not seen yet
-   * (partial arms only), its time run out (the line stayed busy).
+   * read. An arm withdraws the disarms of its area still waiting. An arm whose
+   * mode covers the one armed (total over a partial, P1 + P2 over P1 or P2)
+   * is sent: a success only once the state read shows the mode asked. What
+   * still refuses it (nothing sent): the alarm unreachable, an unknown area or
+   * an absent P1/P2, a delay running, the area armed in a mode that neither
+   * covers nor is covered by the one asked (P2 for an arm P1), an alarm in
+   * progress, a partial arm on an unreadable state unless the last state
+   * known is disarmed or a mode it covers, a partial arm just after a disarm
+   * not seen yet unless it covers the mode read, its time run out (the line
+   * stayed busy).
    */
   async arm(index, mode, asked = this.now()) {
     if (!ARM_ACTIONS[mode]) throw new Error(`Unknown arming mode ${mode}`);
@@ -1424,11 +1432,12 @@ export class ComelitApp {
       if (!(err instanceof Refused)) throw err;
       if (!client.connected || !this.vedoOnline) throw this.refused(T.vedoOffline);
       // Unreadable. An arm total never lowers anything: sent anyway. A partial
-      // arm goes only when the last state known is disarmed: covered already,
-      // or armed in a mode that does not cover it (disarm first), it is
-      // refused as on a state read; unknown, it is refused too.
+      // arm goes when the last state known is disarmed or armed in a mode it
+      // covers (P1 + P2 over P1 or P2); covered already (it might lower a mode
+      // armed since), armed in a mode neither covers (disarm first) or
+      // unknown, it is refused.
       const known = this.model.vedo?.areas.get(index)?.status;
-      if (!total && known?.mode !== 'disarmed') {
+      if (!total && known?.mode !== 'disarmed' && !raises(known?.mode, mode)) {
         this.logger.warn(`Arm REFUSED (${label}): the state could not be read (${err.message})`);
         throw this.refused(
           known?.mode && known.mode !== 'disarmed' && !covers(known.mode, mode)
@@ -1440,9 +1449,11 @@ export class ComelitApp {
       status = undefined;
     }
     if (status && status.level > 0 && this.disarmUncertain(index)) {
-      // A disarm just left: the state read may predate its effect. An arm
-      // total goes (it lowers nothing); a partial one would be a lowering.
-      if (!total) {
+      // A disarm just left: the state read may predate its effect (the area
+      // is that mode, or disarmed). An arm total, or a partial one covering
+      // the mode read, goes (it lowers nothing either way); another partial
+      // one could lower it, or answer "already armed" on a disarmed area.
+      if (!total && !raises(status.mode, mode)) {
         this.logger.warn(`Arm REFUSED (${label}): a disarm just left, state uncertain`);
         throw this.refused(T.afterDisarm);
       }
@@ -1454,17 +1465,23 @@ export class ComelitApp {
         this.logger.info(`Area ${index + 1} already ${status.mode} (${label}): nothing sent`);
         return;
       }
+      // A delay or an alarm running: an arm could restart the delay or reset
+      // the alarm (unknown on the Vedo), so it is never sent then.
       if (status.exitDelay || status.entryDelay) {
         this.logger.warn(`Arm REFUSED (${label}): a delay is running`);
         throw this.refused(T.delayInProgress);
       }
-      if (status.level > 0) {
+      if (status.level > 0 && !raises(status.mode, mode)) {
+        // P1 over P2: the Vedo might replace P2 by P1.
         this.logger.warn(`Arm REFUSED (${label}): area ${index + 1} is ${status.mode}`);
         throw this.refused(T.otherMode);
       }
       if (status.alarm) {
         this.logger.warn(`Arm REFUSED (${label}): alarm in progress`);
         throw this.refused(T.alarmInProgress);
+      }
+      if (status.level > 0) {
+        this.logger.info(`Area ${index + 1} is ${status.mode}: ${label} adds zones`);
       }
     }
     const before = status ?? { level: undefined };

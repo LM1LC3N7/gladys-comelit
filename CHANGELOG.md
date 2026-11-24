@@ -18,9 +18,12 @@ the notes of the version's GitHub Release.
   alarm's line, the arms of a scene share one state read and all leave on a
   slow Vedo too (three areas at 700 ms, two at 900 ms), an arm total leaves
   even when the area state cannot be read (a partial arm only when the last
-  state known is disarmed), an arm whose mode is already covered sends
-  nothing (total covers everything, P1 + P2 covers P1 and P2; an area armed
-  P2 refuses an arm P1: disarm it first), an arm withdraws a disarm of its
+  state known is disarmed or a mode it covers), an arm whose mode is already
+  covered sends nothing (total covers everything, P1 + P2 covers P1 and P2),
+  an arm that raises the protection is sent on an armed area (total over
+  P1, P2 or P1 + P2, P1 + P2 over P1 or P2) and reported a success only when
+  the Vedo shows the mode asked, only an arm P1 on an area armed P2 is
+  refused (disarm it first), an arm withdraws a disarm of its
   area still waiting, and it may be written up to 4.3 s after the press
   (an arm queued behind a request that holds the line for 4 s still leaves).
 - Lights and plugs switched off go ahead of the reads and polls waiting on

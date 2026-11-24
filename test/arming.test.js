@@ -138,33 +138,58 @@ test('arm P1 on an unreadable state with "armed total" in memory: refused, nothi
   assert.deepEqual(armsOf(ctx), []);
 });
 
-test('a disarm whose action waits on the line is withdrawn by an arm of its area (K)', async (t) => {
+test('a disarm whose action waits on the line is withdrawn at the socket by an arm of its area (K)', async (t) => {
   const ctx = await setup(t, 0, { allow_disarm: true }, (f) => {
     f.areas.armed[0] = 4;
   });
+  // The startup over: its reads never take the hook below.
+  await sleep(500);
+  await ctx.app.chain;
+  let release;
+  const gate = new Promise((resolve) => {
+    release = resolve;
+  });
   let phase = 'read';
+  let background;
+  const reached = [];
   ctx.fake.hook = async (entry) => {
+    reached.push(entry.path);
     if (phase === 'read' && entry.path.includes('area_stat')) {
+      // The disarm's read: a bridge read queued now takes the line next.
       phase = 'bg';
-      await sleep(300);
+      background = ctx.app.bridge.readStatus('light').catch((err) => err);
     } else if (phase === 'bg' && entry.path.includes('icon_status')) {
-      phase = 'done';
-      await sleep(600);
+      // …and holds it while the disarm's action waits in the queue.
+      phase = 'held';
+      await gate;
     }
     return undefined;
   };
   const disarm = ctx.set('area', 0, 'disarm', 1);
-  await sleep(50);
-  const background = ctx.app.bridge.readStatus('light').catch((err) => err);
-  // The disarm's read answered; the background read holds the line; the disarm's action waits.
-  await sleep(400);
+  await until(() => ctx.logger.lines.some((l) => /DISARMING from Gladys/.test(l)));
+  assert.equal(phase, 'held', 'the disarm action queued behind a read in flight');
+  assert.ok(!reached.some((p) => p.includes('action.cgi')), 'not at the transport yet');
   const arm = ctx.set('area', 0, 'arm-total', 1);
+  await until(() => ctx.logger.lines.some((l) => /Disarm of area 1 WITHDRAWN/.test(l)));
+  release();
   const [d, a] = await Promise.all([disarm, arm]);
   await background;
+  // The start condition: the disarm's action reached the transport, after the
+  // arm's read, and the last look before the socket withdrew it.
+  const reads = reached.flatMap((p, i) => (p.includes('area_stat') ? [i] : []));
+  const action = reached.findIndex((p) => p.includes('dis=0'));
+  assert.ok(
+    action > reads[1],
+    `the disarm action reached the transport after the arm's read: ${reached}`,
+  );
+  assert.ok(
+    ctx.logger.lines.some((l) => /Command NOT sent .*withdrawn: not allowed any more/.test(l)),
+    'withdrawn by the last look before the socket',
+  );
+  assert.deepEqual(actions(ctx), [], 'neither the disarm nor the arm (already armed) written');
   assert.equal(d.success, false);
   assert.match(d.error, /Disarm withdrawn: an arming of the same area was asked meanwhile/);
   assert.equal(a.success, true, a.error);
-  assert.deepEqual(actions(ctx), [], 'neither the disarm nor the arm (already armed) went');
   assert.equal(ctx.fake.areas.armed[0], 4, 'the area stays armed');
 });
 

@@ -212,8 +212,8 @@ export const T = {
     en: 'A disarm just left and is not seen yet: state uncertain, nothing was sent',
   },
   armStateUnknown: {
-    fr: "État illisible sur le pont, et le dernier état connu protège autant : rien n'a été envoyé",
-    en: 'The state could not be read from the bridge, and the last state known protects as much: nothing was sent',
+    fr: "État illisible sur le pont, et le dernier état connu ne montre pas le secteur désarmé : rien n'a été envoyé",
+    en: 'The state could not be read from the bridge, and the last state known does not show the area disarmed: nothing was sent',
   },
   otherMode: {
     fr: "Le secteur est déjà armé dans un autre mode : désarmez-le d'abord. Rien n'a été envoyé",

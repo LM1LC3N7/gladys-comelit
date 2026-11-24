@@ -18,8 +18,13 @@ the notes of the version's GitHub Release.
   alarm's line, the arms of a scene share one state read and all leave on a
   slow Vedo too (three areas at 700 ms, two at 900 ms), an arm total leaves
   even when the area state cannot be read (a partial arm only when the last
-  state known protects less), an arm withdraws a disarm of its area still
-  waiting, and it may be written up to 4.3 s after the press. What still
+  state known is disarmed), an arm whose mode is already covered sends
+  nothing (total covers everything, P1 + P2 covers P1 and P2; an area armed
+  P2 refuses an arm P1: disarm it first), an arm withdraws a disarm of its
+  area still waiting, and it may be written up to 4.3 s after the press
+  (an arm queued behind a request that holds the line for 4 s still leaves).
+- Lights and plugs switched off go ahead of the reads and polls waiting on
+  the bridge's line, like an arming. What still
   refuses an arm is listed in the guide. Disarming, the setpoints and the
   doors keep their own options, off by default, re-read right before the
   request is sent.

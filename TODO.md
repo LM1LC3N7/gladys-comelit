@@ -136,8 +136,9 @@ up to date at the end of every milestone.
   disarmed. Arming needs no option (2026-11-24, wave 16 r1): it is
   protective, goes first on the alarm's line (`priority: 'protective'`),
   the arms arriving together share one area read, an arm total leaves even
-  on an unreadable state, a partial arm only when the last state known
-  protects less, an arm withdraws the disarms of its area still waiting, and
+  on an unreadable state, a partial arm only when the last state known is
+  disarmed (inclusion rule: total covers everything, P1 + P2 covers P1 and
+  P2, P1 only P1, P2 only P2; anything else armed: "disarm first"), an arm withdraws the disarms of its area still waiting, and
   it may be written up to `armSendBy` (4.3 s). Disarming is an option, off
   by default.
 - **Shutters**: open / close are absolute but decided on a fresh read:

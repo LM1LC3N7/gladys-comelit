@@ -219,3 +219,30 @@ test('a 401 or 403 to the PIN posted is a refusal: stop, no new try', async (t) 
     assert.equal(fake.log.filter((l) => l.startsWith('POST login.cgi')).length, 1);
   }
 });
+
+test('a protective request goes before the priority ones waiting, which go before the polls', async (t) => {
+  const fake = new FakeBridge();
+  const { c } = client(t, fake);
+  c.start();
+  await until(() => c.connected);
+  let seen = 0;
+  let hold;
+  const held = new Promise((resolve) => {
+    hold = resolve;
+  });
+  fake.hook = async () => {
+    seen += 1;
+    if (seen === 1) await held; // the line is busy with this one
+    return undefined;
+  };
+  const busy = c.readStatus('light');
+  await sleep(10);
+  const poll = c.readStatus('shutter');
+  const priority = c.readStatus('plug', { priority: true });
+  const protective = c.readStatus('thermostat', { priority: 'protective' });
+  const priority2 = c.readStatus('light', { priority: true });
+  hold();
+  await Promise.all([busy, poll, priority, protective, priority2]);
+  const kinds = fake.requests.slice(-5).map((r) => r.query.type);
+  assert.deepEqual(kinds, ['light', 'clima', 'other', 'light', 'shutter']);
+});

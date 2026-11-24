@@ -134,6 +134,97 @@ test('arm P1 on an unreadable state with "armed total" in memory: refused, nothi
       : undefined;
   const ack = await ctx.set('area', 0, 'arm-p1', 1);
   assert.equal(ack.success, false);
-  assert.match(ack.error, /last state known protects as much: nothing was sent/);
+  assert.match(ack.error, /last state known does not show the area disarmed: nothing was sent/);
   assert.deepEqual(armsOf(ctx), []);
+});
+
+test('a disarm whose action waits on the line is withdrawn by an arm of its area (K)', async (t) => {
+  const ctx = await setup(t, 0, { allow_disarm: true }, (f) => {
+    f.areas.armed[0] = 4;
+  });
+  let phase = 'read';
+  ctx.fake.hook = async (entry) => {
+    if (phase === 'read' && entry.path.includes('area_stat')) {
+      phase = 'bg';
+      await sleep(300);
+    } else if (phase === 'bg' && entry.path.includes('icon_status')) {
+      phase = 'done';
+      await sleep(600);
+    }
+    return undefined;
+  };
+  const disarm = ctx.set('area', 0, 'disarm', 1);
+  await sleep(50);
+  const background = ctx.app.bridge.readStatus('light').catch((err) => err);
+  // The disarm's read answered; the background read holds the line; the disarm's action waits.
+  await sleep(400);
+  const arm = ctx.set('area', 0, 'arm-total', 1);
+  const [d, a] = await Promise.all([disarm, arm]);
+  await background;
+  assert.equal(d.success, false);
+  assert.match(d.error, /Disarm withdrawn: an arming of the same area was asked meanwhile/);
+  assert.equal(a.success, true, a.error);
+  assert.deepEqual(actions(ctx), [], 'neither the disarm nor the arm (already armed) went');
+  assert.equal(ctx.fake.areas.armed[0], 4, 'the area stays armed');
+});
+
+test('a disarm the Vedo shows 1.5 s late, then an arm total 300 ms after: the arm goes (L)', async (t) => {
+  const ctx = await setup(t, 0, { allow_disarm: true }, (f) => {
+    f.areas.armed[0] = 4;
+  });
+  let pending = false;
+  let disarmAt;
+  ctx.fake.hook = async (entry) => {
+    if (entry.path.includes('dis=0')) {
+      pending = true;
+      disarmAt = Date.now();
+      // The fake applies a disarm at once: undone, then shown 1.5 s later.
+      setTimeout(() => {
+        if (pending) ctx.fake.areas.armed[0] = 4;
+      }, 0);
+      setTimeout(() => {
+        if (pending) {
+          ctx.fake.areas.armed[0] = 0;
+          pending = false;
+        }
+      }, 1_500);
+    }
+    if (entry.path.includes('tot=0')) pending = false;
+    return undefined;
+  };
+  const disarm = ctx.set('area', 0, 'disarm', 1);
+  await until(() => disarmAt !== undefined, 3_000);
+  await sleep(300);
+  const arm = await ctx.set('area', 0, 'arm-total', 1);
+  await disarm;
+  await sleep(1_800);
+  // Never "already armed: nothing sent" on a state the disarm may still change.
+  assert.ok(
+    actions(ctx).some((l) => l.includes('tot=0')),
+    'the arm total was sent',
+  );
+  assert.doesNotMatch(arm.error ?? '', /nothing was sent/i, arm.error);
+  assert.equal(ctx.fake.areas.armed[0], 4, 'the area ends armed');
+  assert.ok(ctx.logger.lines.some((l) => /ARMING from Gladys/.test(l)));
+});
+
+test('an arm queued behind a request holding the line for 3.8 s still leaves (armSendBy)', async (t) => {
+  const ctx = await setup(t, 0);
+  let holds = 0;
+  ctx.fake.hook = async (entry) => {
+    if (entry.path.includes('icon_status') && holds === 0) {
+      holds += 1;
+      await sleep(3_800);
+    }
+    return undefined;
+  };
+  const background = ctx.app.bridge.readStatus('light').catch((err) => err);
+  await sleep(50);
+  const started = Date.now();
+  const ack = await ctx.set('area', 0, 'arm-total', 1);
+  await background;
+  const took = Date.now() - started;
+  assert.ok(ack.success || /without confirmation/.test(ack.error), ack.error);
+  assert.deepEqual(armsOf(ctx), ['GET user/action.cgi?vedo=1&tot=0&force=0']);
+  assert.ok(took >= 3_700 && took < 5_000, `written once the line was free (${took} ms)`);
 });

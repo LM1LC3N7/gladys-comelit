@@ -64,8 +64,19 @@ const OPTIONS = {
 
 const emptyModel = () => ({ bridge: undefined, vedo: undefined, doors: undefined });
 
-/** The protection of an arming mode: the Vedo's armed level. An arm never lowers it. */
-const PROTECTION = { armed_p1: 1, armed_p12: 3, armed_total: 4 };
+/**
+ * What an armed mode covers: P1 and P2 are two distinct groups of zones (P2
+ * does not contain P1); P1 + P2 covers both; total covers everything. An arm
+ * whose mode is already covered sends nothing; an area armed in a mode that
+ * does not cover it must be disarmed first (the Vedo arms a disarmed area).
+ */
+const COVERS = {
+  armed_p1: ['armed_p1'],
+  armed_p2: ['armed_p2'],
+  armed_p12: ['armed_p1', 'armed_p2', 'armed_p12'],
+  armed_total: ['armed_p1', 'armed_p2', 'armed_p12', 'armed_total'],
+};
+const covers = (have, want) => Boolean(COVERS[have]?.includes(want));
 
 const isButtonPush = (value) =>
   value === BUTTON_PUSH.PRESSED || value === String(BUTTON_PUSH.PRESSED);
@@ -1227,7 +1238,11 @@ export class ComelitApp {
         asked,
         (options) =>
           this.bridgeCommand(kind, index, () =>
-            this.bridge.deviceAction(kind, index, on ? 1 : 0, options),
+            this.bridge.deviceAction(kind, index, on ? 1 : 0, {
+              ...options,
+              // Off is protective: ahead of the reads and polls waiting on the line.
+              ...(on ? {} : { priority: 'protective' }),
+            }),
           ),
         {
           client: this.bridge,
@@ -1391,7 +1406,7 @@ export class ComelitApp {
     if (!ARM_ACTIONS[mode]) throw new Error(`Unknown arming mode ${mode}`);
     const what = fill(COMMAND_NAMES[mode], index + 1);
     const label = word(what, 'en');
-    const level = PROTECTION[mode];
+    const total = mode === 'armed_total';
     const area = this.vedoArea(index);
     if (mode === 'armed_p1' && !area.p1) {
       throw this.refused(fill(T.unknownObject, `P1 ${index + 1}`));
@@ -1409,11 +1424,17 @@ export class ComelitApp {
       if (!(err instanceof Refused)) throw err;
       if (!client.connected || !this.vedoOnline) throw this.refused(T.vedoOffline);
       // Unreadable. An arm total never lowers anything: sent anyway. A partial
-      // arm goes only when the last state known protects less.
+      // arm goes only when the last state known is disarmed: covered already,
+      // or armed in a mode that does not cover it (disarm first), it is
+      // refused as on a state read; unknown, it is refused too.
       const known = this.model.vedo?.areas.get(index)?.status;
-      if (level < PROTECTION.armed_total && !(known?.level !== undefined && known.level < level)) {
+      if (!total && known?.mode !== 'disarmed') {
         this.logger.warn(`Arm REFUSED (${label}): the state could not be read (${err.message})`);
-        throw this.refused(T.armStateUnknown);
+        throw this.refused(
+          known?.mode && known.mode !== 'disarmed' && !covers(known.mode, mode)
+            ? T.otherMode
+            : T.armStateUnknown,
+        );
       }
       this.logger.warn(`Arm (${label}): the state could not be read (${err.message}); sent anyway`);
       status = undefined;
@@ -1421,15 +1442,15 @@ export class ComelitApp {
     if (status && status.level > 0 && this.disarmUncertain(index)) {
       // A disarm just left: the state read may predate its effect. An arm
       // total goes (it lowers nothing); a partial one would be a lowering.
-      if (level < PROTECTION.armed_total) {
+      if (!total) {
         this.logger.warn(`Arm REFUSED (${label}): a disarm just left, state uncertain`);
         throw this.refused(T.afterDisarm);
       }
       status = undefined;
     }
     if (status) {
-      if (status.level >= level) {
-        // Already as protected (or more): never an arm that lowers.
+      if (covers(status.mode, mode)) {
+        // Already covered: never an arm that lowers.
         this.logger.info(`Area ${index + 1} already ${status.mode} (${label}): nothing sent`);
         return;
       }

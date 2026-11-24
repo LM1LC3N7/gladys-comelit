@@ -89,17 +89,19 @@ compris), attend les connexions et indique ce qui a été trouvé.
 - **Armer est toujours autorisé** (c'est protecteur). Armer avec quelqu'un à
   l'intérieur (une scène, une erreur) peut déclencher une fausse alarme, les
   sirènes et un appel de votre télésurveillance. Un armement ne baisse jamais
-  la protection (armer P1 un secteur armé total n'envoie rien) et n'est jamais
-  forcé. Il passe devant les relectures de confirmation, le polling et un
+  la protection : un armement dont le mode est déjà couvert n'envoie rien
+  (total couvre tout, P1 + P2 couvre P1 et P2, P1 seulement P1 et P2
+  seulement P2), et il n'est jamais forcé. Il passe devant les relectures de confirmation, le polling et un
   désarmement en attente sur la ligne ; les armements d'une scène (« tout
   armer ») partagent une seule lecture d'état et partent tous, même sur une
   Vedo lente ; un armement total part même si l'état du secteur est illisible ;
   un armement retire un désarmement du même secteur encore en attente. Armer
   reste refusé, sans rien envoyer, dans ces seuls cas : alarme injoignable ;
   secteur inconnu, ou P1 / P2 absent dessus ; délai d'entrée ou de sortie en
-  cours ; secteur armé dans un autre mode, plus faible (la Vedo arme un secteur
-  désarmé : désarmez-le d'abord) ; alarme en cours ; armement P1 ou P1 + P2
-  dont l'état est illisible alors que le dernier état connu protège autant, ou
+  cours ; secteur armé dans un mode qui ne couvre pas celui demandé (P2 pour
+  un armement P1, P1 pour un armement total : la Vedo arme un secteur
+  désarmé, désarmez-le d'abord) ; alarme en cours ; armement P1 ou P1 + P2
+  dont l'état est illisible sauf si le dernier état connu est désarmé, ou
   juste après un désarmement dont l'effet n'est pas encore visible ; temps
   écoulé (ligne occupée plus de 4,3 s).
 - **Désarmer est désactivé par défaut**. Une fois « Autoriser le désarmement » cochée, **tout utilisateur

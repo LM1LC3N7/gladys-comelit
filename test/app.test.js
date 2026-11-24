@@ -726,13 +726,56 @@ test('a partial arm on an unreadable state goes only when the last state known p
   garbage();
   const again = await ctx.set('area', 0, 'arm-p1', 1);
   assert.equal(again.success, false);
-  assert.match(again.error, /could not be read .* last state known protects as much/);
+  assert.match(again.error, /could not be read .* does not show the area disarmed/);
   assert.equal(commands(ctx).length, 1, 'nothing sent');
   // Arm total on the same unreadable state: sent anyway.
   garbage();
   const total = await ctx.set('area', 0, 'arm-total', 1);
   assert.equal(total.success, true, total.error);
   assert.equal(commands(ctx).length, 2);
+});
+
+test('an arm on an armed area: nothing sent when covered, "disarm first" otherwise', async (t) => {
+  const ctx = await setup(t);
+  await up(ctx);
+  const armed = async (level, key) => {
+    ctx.fake.areas.armed[0] = level;
+    const before = commands(ctx).length;
+    const ack = await ctx.set('area', 0, key, 1);
+    return { ack, sent: commands(ctx).length - before };
+  };
+  // P2 does not contain P1: refused, nothing sent (never a false "done").
+  const p2 = await armed(2, 'arm-p1');
+  assert.equal(p2.ack.success, false);
+  assert.match(p2.ack.error, /armed in another mode: disarm it first/);
+  assert.equal(p2.sent, 0);
+  // P1 + P2 and total cover P1: nothing sent, success.
+  for (const level of [3, 4]) {
+    const covered = await armed(level, 'arm-p1');
+    assert.equal(covered.ack.success, true, covered.ack.error);
+    assert.equal(covered.sent, 0, `level ${level}`);
+  }
+  // P1 does not cover P1 + P2 nor total: disarm first.
+  for (const key of ['arm-p12', 'arm-total']) {
+    const weaker = await armed(1, key);
+    assert.equal(weaker.ack.success, false, key);
+    assert.match(weaker.ack.error, /disarm it first/);
+    assert.equal(weaker.sent, 0);
+  }
+  // P2 known, state unreadable, arm P1: the same refusal, same message.
+  ctx.fake.areas.armed[0] = 2;
+  await ctx.app.alarmClient().readAreas();
+  await settle();
+  assert.equal(ctx.app.model.vedo.areas.get(0).status.mode, 'armed_p2');
+  ctx.fake.hook = async (entry) =>
+    entry.path.includes('area_stat')
+      ? { response: { status: 200, headers: {}, text: 'not json' } }
+      : undefined;
+  const unreadable = await ctx.set('area', 0, 'arm-p1', 1);
+  ctx.fake.hook = undefined;
+  assert.equal(unreadable.success, false);
+  assert.match(unreadable.error, /armed in another mode: disarm it first/);
+  assert.equal(commands(ctx).length, 0);
 });
 
 test('getConfig() failing at connection: tried again, then the module starts', async (t) => {

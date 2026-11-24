@@ -23,7 +23,14 @@ export function registerHandlers(gladys, app, logger, { retryWait = 2_000 } = {}
   // Connection lifecycle: the first connection starts, a reconnection resends.
   // getConfig() (or the start) failing is tried again, spaced out, while the
   // connection lasts: the module never stays inert, nor on older options.
+  // One loop at a time: a new connection (or a disconnection) ends the previous one.
+  let generation = 0;
+  gladys.on('disconnected', () => {
+    generation += 1;
+  });
   gladys.on('connected', async () => {
+    generation += 1;
+    const mine = generation;
     for (let wait = retryWait; ; wait = Math.min(wait * 2, 60_000)) {
       try {
         await app.connected(await gladys.getConfig());
@@ -32,7 +39,7 @@ export function registerHandlers(gladys, app, logger, { retryWait = 2_000 } = {}
         logger?.error(`Start failed, trying again in ${wait} ms`, err);
       }
       await new Promise((resolve) => setTimeout(resolve, wait).unref?.());
-      if (!gladys.connected) return;
+      if (generation !== mine || !gladys.connected) return;
     }
   });
 }

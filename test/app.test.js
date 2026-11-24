@@ -656,16 +656,113 @@ test('the PINs and the token never reach the logs', async (t) => {
       intercom_host: '192.0.2.11',
       intercom_token: 'secret-token-abcdef',
       allow_door: true,
+      allow_disarm: true,
+      allow_setpoint: true,
     },
-    bridge: new FakeBridge({ pin: '424242' }),
+    bridge: new FakeBridge({ pin: '424242', vedoPin: '0000' }),
   });
   await up(ctx);
   await until(() => ctx.app.doorState === 'refused');
   await ctx.set('light', 0, 'state', 1);
+  assert.equal((await ctx.set('area', 0, 'arm-total', 1)).success, true);
+  assert.equal((await ctx.set('area', 0, 'disarm', 1)).success, true);
+  assert.equal((await ctx.set('thermostat', 0, 'setpoint', 22)).success, true);
+  assert.equal(commands(ctx).length, 4, 'light, arm, disarm and setpoint went to the bridge');
   const text = ctx.logger.lines.join('\n');
   for (const secret of ['424242', '0000', 'secret-token-abcdef', 'uid=s1']) {
     assert.ok(!text.includes(secret), `${secret} in the logs`);
   }
+  const written = JSON.stringify([ctx.gladys.fake.connectionStatus, ctx.store?.data ?? null]);
+  for (const secret of ['424242', '0000', 'secret-token-abcdef']) {
+    assert.ok(!written.includes(secret), `${secret} in the status or /data`);
+  }
+});
+
+test('an arm withdraws a disarm of its area still waiting: nothing sent for it', async (t) => {
+  const ctx = await setup(t, { config: { allow_disarm: true } });
+  await up(ctx);
+  ctx.fake.areas.armed[0] = 4;
+  // The disarm's fresh read takes 100 ms: the arm arrives while the disarm waits for it.
+  ctx.fake.hook = async (entry) => {
+    if (entry.path.includes('area_stat')) {
+      ctx.fake.hook = undefined;
+      await sleep(100);
+    }
+    return undefined;
+  };
+  const disarm = ctx.set('area', 0, 'disarm', 1);
+  await sleep(20);
+  const arm = ctx.set('area', 0, 'arm-total', 1);
+  const [d, a] = await Promise.all([disarm, arm]);
+  assert.equal(d.success, false);
+  assert.match(d.error, /Disarm withdrawn: an arming of the same area was asked meanwhile/);
+  assert.equal(a.success, true, a.error);
+  assert.deepEqual(commands(ctx), [], 'already armed total: nothing sent, the disarm neither');
+  assert.equal(ctx.fake.areas.armed[0], 4, 'still armed');
+});
+
+test('a partial arm on an unreadable state goes only when the last state known protects less', async (t) => {
+  const ctx = await setup(t);
+  await up(ctx);
+  const garbage = () => {
+    ctx.fake.hook = async (entry) => {
+      if (entry.path.includes('area_stat')) {
+        ctx.fake.hook = undefined;
+        return { response: { status: 200, headers: {}, text: 'not json' } };
+      }
+      return undefined;
+    };
+  };
+  // Known disarmed: P1 protects more, sent anyway.
+  garbage();
+  const p1 = await ctx.set('area', 0, 'arm-p1', 1);
+  assert.equal(p1.success, true, p1.error);
+  assert.deepEqual(commands(ctx), ['GET user/action.cgi?vedo=1&p1=0&force=0']);
+  // Known armed total (seen by the read back): P1 would lower, refused.
+  ctx.fake.areas.armed[0] = 4;
+  await ctx.app.alarmClient().readAreas();
+  await settle();
+  assert.equal(ctx.app.model.vedo.areas.get(0).status.level, 4);
+  garbage();
+  const again = await ctx.set('area', 0, 'arm-p1', 1);
+  assert.equal(again.success, false);
+  assert.match(again.error, /could not be read .* last state known protects as much/);
+  assert.equal(commands(ctx).length, 1, 'nothing sent');
+  // Arm total on the same unreadable state: sent anyway.
+  garbage();
+  const total = await ctx.set('area', 0, 'arm-total', 1);
+  assert.equal(total.success, true, total.error);
+  assert.equal(commands(ctx).length, 2);
+});
+
+test('getConfig() failing at connection: tried again, then the module starts', async (t) => {
+  const gladys = createFakeGladys({ config: BASE });
+  const fake = new FakeBridge();
+  const logger = quietLogger();
+  const app = new ComelitApp({
+    gladys,
+    logger,
+    transport: fake.transport,
+    connectIcona: new FakeIcona().connect,
+    store: memoryStore(),
+    timings: FAST,
+  });
+  t.after(() => app.stop({ final: true }));
+  // The SDK itself reads the configuration once at connection (call 1); the
+  // handler's own read (call 2) fails, then succeeds.
+  let calls = 0;
+  const original = gladys.getConfig.bind(gladys);
+  gladys.getConfig = async () => {
+    calls += 1;
+    if (calls === 2) throw new Error('Gladys answered 500');
+    return original();
+  };
+  registerHandlers(gladys, app, logger, { retryWait: 20 });
+  await gladys.connect();
+  assert.equal(calls, 3, 'asked again');
+  assert.ok(logger.lines.some((l) => l.includes('Start failed, trying again')));
+  await until(() => app.bridgeOnline);
+  assert.equal(app.started, true);
 });
 
 test('a Vedo IP of its own: its own session, its own link device', async (t) => {

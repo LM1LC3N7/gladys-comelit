@@ -86,8 +86,23 @@ compris), attend les connexions et indique ce qui a été trouvé.
 
 ## Sécurité
 
-- **Armer est toujours autorisé** (c'est protecteur) ; **désarmer est
-  désactivé par défaut**. Une fois « Autoriser le désarmement » cochée, **tout utilisateur
+- **Armer est toujours autorisé** (c'est protecteur). Armer avec quelqu'un à
+  l'intérieur (une scène, une erreur) peut déclencher une fausse alarme, les
+  sirènes et un appel de votre télésurveillance. Un armement ne baisse jamais
+  la protection (armer P1 un secteur armé total n'envoie rien) et n'est jamais
+  forcé. Il passe devant les relectures de confirmation, le polling et un
+  désarmement en attente sur la ligne ; les armements d'une scène (« tout
+  armer ») partagent une seule lecture d'état et partent tous, même sur une
+  Vedo lente ; un armement total part même si l'état du secteur est illisible ;
+  un armement retire un désarmement du même secteur encore en attente. Armer
+  reste refusé, sans rien envoyer, dans ces seuls cas : alarme injoignable ;
+  secteur inconnu, ou P1 / P2 absent dessus ; délai d'entrée ou de sortie en
+  cours ; secteur armé dans un autre mode, plus faible (la Vedo arme un secteur
+  désarmé : désarmez-le d'abord) ; alarme en cours ; armement P1 ou P1 + P2
+  dont l'état est illisible alors que le dernier état connu protège autant, ou
+  juste après un désarmement dont l'effet n'est pas encore visible ; temps
+  écoulé (ligne occupée plus de 4,3 s).
+- **Désarmer est désactivé par défaut**. Une fois « Autoriser le désarmement » cochée, **tout utilisateur
   de Gladys, toute scène et l'application mobile Gladys peuvent désarmer sans
   taper de code** : le code de la configuration suffit. Ne l'autorisez que si
   votre Gladys est bien protégé. Désarmer coupe aussi une alarme en cours.
@@ -99,11 +114,12 @@ compris), attend les connexions et indique ce qui a été trouvé.
   qu'une commande attend son tour bloque cette commande.
 - Avant chaque commande d'alarme, de thermostat ou d'arrêt de volet,
   l'intégration **relit l'état sur le pont** et décide sur cet état, jamais
-  sur ce qu'elle a en mémoire. Les commandes passent une par une.
+  sur ce qu'elle a en mémoire. Les commandes passent une par une, les
+  armements d'abord.
 - L'armement n'est jamais forcé : un secteur que la Vedo refuse d'armer tel
   quel (zone ouverte, anomalie) reste désarmé.
-- Une commande qui ne peut pas partir dans les temps (pont lent, état
-  illisible) est refusée avec « rien n'a été envoyé ». Une commande partie
+- Une commande autre qu'un armement qui ne peut pas partir dans les temps
+  (pont lent, état illisible) est refusée avec « rien n'a été envoyé ». Une commande partie
   sans réponse claire (pas de réponse, réponse inattendue) est annoncée
   « envoyée, sans confirmation » et l'état est relu : elle n'est jamais
   annoncée « non envoyée ». Seul un refus net du pont (HTTP 4xx) est annoncé

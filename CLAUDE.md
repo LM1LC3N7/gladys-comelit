@@ -56,7 +56,9 @@ thermostat, disarming and opening a door stay off by default, each option
 checked again right before the write (arming is always allowed); alarm and door commands are
 push buttons, never switches; shutters are `shutter`, never switches; a
 command decides on the state read from the bridge just before it, one at a
-time per host; a command that may have left is never reported "not sent";
+time per host (an arming goes first on the alarm's line, its read shared by
+the arms arriving together, and an arm total leaves even on an unreadable
+state); a command that may have left is never reported "not sent";
 a refused PIN or token stops its session, never a loop; the acks never wait
 for a publication; the PINs and the token are never logged nor written to
 `/data`.

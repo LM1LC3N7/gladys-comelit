@@ -203,6 +203,18 @@ export const T = {
     fr: "Alarme injoignable : rien n'a été envoyé",
     en: 'The alarm is unreachable: nothing was sent',
   },
+  disarmWithdrawn: {
+    fr: "Désarmement retiré : un armement du même secteur a été demandé entre-temps. Rien n'a été envoyé",
+    en: 'Disarm withdrawn: an arming of the same area was asked meanwhile. Nothing was sent',
+  },
+  afterDisarm: {
+    fr: "Un désarmement vient de partir et n'est pas encore visible : état incertain, rien n'a été envoyé",
+    en: 'A disarm just left and is not seen yet: state uncertain, nothing was sent',
+  },
+  armStateUnknown: {
+    fr: "État illisible sur le pont, et le dernier état connu protège autant : rien n'a été envoyé",
+    en: 'The state could not be read from the bridge, and the last state known protects as much: nothing was sent',
+  },
   otherMode: {
     fr: "Le secteur est déjà armé dans un autre mode : désarmez-le d'abord. Rien n'a été envoyé",
     en: 'The area is armed in another mode: disarm it first. Nothing was sent',

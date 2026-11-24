@@ -12,10 +12,19 @@ the notes of the version's GitHub Release.
 
 ### Changed
 
-- **Arming no longer needs an option**: the `allow_arm` option is gone,
-  arming (total, P1, P1 + P2) always goes, as a protective command should.
-  Disarming, the setpoints and the doors keep their own options, off by
-  default, re-read right before the request is sent.
+- **Every installation can now arm the Vedo from Gladys** (dashboard,
+  scenes, app): the `allow_arm` option is gone, arming is protective. It goes
+  ahead of the confirmation reads, the polls and a waiting disarm on the
+  alarm's line, the arms of a scene share one state read and all leave on a
+  slow Vedo too (three areas at 700 ms, two at 900 ms), an arm total leaves
+  even when the area state cannot be read (a partial arm only when the last
+  state known protects less), an arm withdraws a disarm of its area still
+  waiting, and it may be written up to 4.3 s after the press. What still
+  refuses an arm is listed in the guide. Disarming, the setpoints and the
+  doors keep their own options, off by default, re-read right before the
+  request is sent.
+- A failed `getConfig()` at (re)connection is tried again, spaced out,
+  instead of leaving the module inert or on older options.
 - Integration SDK 0.16.1 (no change for the devices); the test runner stops a
   hanging test after 60 s.
 

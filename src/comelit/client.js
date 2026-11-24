@@ -528,7 +528,9 @@ export class ComelitClient extends EventEmitter {
 
   /**
    * Queues a request; resolves `{ status, text, cookie }` whatever the HTTP
-   * status. `command` / `priority`: before the polling requests. `sendBy` (a
+   * status. `command` / `priority`: before the polling requests;
+   * `priority: 'protective'` (an arming): before every other waiting request,
+   * confirmation reads and polls included. `sendBy` (a
    * time): never written after it, rejected as not sent instead. `check`: a
    * last look right before the write; false withdraws it. `ticket` gets
    * `written` and `cancel()`, which withdraws the request while it is not
@@ -596,8 +598,10 @@ export class ComelitClient extends EventEmitter {
         }
         return false;
       };
-      // Priority requests go after the other priority ones, before the rest.
-      const at = priority ? this.queue.findIndex((e) => !e.priority) : -1;
+      // A request goes after the waiting ones of its rank, before the lower ranks.
+      const rank = (e) => (e.priority === 'protective' ? 2 : e.priority ? 1 : 0);
+      const mine = rank(entry);
+      const at = mine > 0 ? this.queue.findIndex((e) => rank(e) < mine) : -1;
       if (at < 0) this.queue.push(entry);
       else this.queue.splice(at, 0, entry);
       this.pump();

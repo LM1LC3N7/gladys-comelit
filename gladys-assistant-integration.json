@@ -232,8 +232,8 @@
         "fr": "Sécurité"
       },
       "description": {
-        "en": "Anyone who can control the devices in Gladys (dashboard, scenes, the Gladys app) can use what you allow here. Setting a thermostat, disarming and opening a door are all off by default: allow them only if your Gladys is well protected. Arming is always allowed. Every command is written in the integration logs; the PINs and the token never are.",
-        "fr": "Toute personne pouvant piloter les appareils dans Gladys (tableau de bord, scènes, application Gladys) peut utiliser ce que vous autorisez ici. Régler un thermostat, désarmer et ouvrir une porte sont tous désactivés par défaut : ne les autorisez que si votre Gladys est bien protégé. Armer est toujours autorisé. Chaque commande est écrite dans les journaux de l'intégration, jamais les codes ni le jeton."
+        "en": "Anyone who can control the devices in Gladys (dashboard, scenes, the Gladys app) can use what you allow here. Setting a thermostat, disarming and opening a door are all off by default: allow them only if your Gladys is well protected. Arming is always allowed: arming with someone inside may raise a false alarm. Every command is written in the integration logs; the PINs and the token never are.",
+        "fr": "Toute personne pouvant piloter les appareils dans Gladys (tableau de bord, scènes, application Gladys) peut utiliser ce que vous autorisez ici. Régler un thermostat, désarmer et ouvrir une porte sont tous désactivés par défaut : ne les autorisez que si votre Gladys est bien protégé. Armer est toujours autorisé : armer avec quelqu'un à l'intérieur peut déclencher une fausse alarme. Chaque commande est écrite dans les journaux de l'intégration, jamais les codes ni le jeton."
       }
     },
     {

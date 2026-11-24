@@ -5,7 +5,7 @@
 
 import { ACTIONS } from './constants.js';
 
-export function registerHandlers(gladys, app, logger) {
+export function registerHandlers(gladys, app, logger, { retryWait = 2_000 } = {}) {
   // Discovery: the bridge objects, the alarm areas and zones, the doors.
   gladys.onScanRequest(() => app.scan());
   gladys.onDeviceCreated((device) => app.deviceChanged(device));
@@ -21,11 +21,18 @@ export function registerHandlers(gladys, app, logger) {
   gladys.onConfigUpdated((config) => app.configUpdated(config));
 
   // Connection lifecycle: the first connection starts, a reconnection resends.
+  // getConfig() (or the start) failing is tried again, spaced out, while the
+  // connection lasts: the module never stays inert, nor on older options.
   gladys.on('connected', async () => {
-    try {
-      await app.connected(await gladys.getConfig());
-    } catch (err) {
-      logger?.error('Start failed', err);
+    for (let wait = retryWait; ; wait = Math.min(wait * 2, 60_000)) {
+      try {
+        await app.connected(await gladys.getConfig());
+        return;
+      } catch (err) {
+        logger?.error(`Start failed, trying again in ${wait} ms`, err);
+      }
+      await new Promise((resolve) => setTimeout(resolve, wait).unref?.());
+      if (!gladys.connected) return;
     }
   });
 }

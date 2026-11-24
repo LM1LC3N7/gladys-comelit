@@ -64,6 +64,9 @@ const OPTIONS = {
 
 const emptyModel = () => ({ bridge: undefined, vedo: undefined, doors: undefined });
 
+/** The protection of an arming mode: the Vedo's armed level. An arm never lowers it. */
+const PROTECTION = { armed_p1: 1, armed_p12: 3, armed_total: 4 };
+
 const isButtonPush = (value) =>
   value === BUTTON_PUSH.PRESSED || value === String(BUTTON_PUSH.PRESSED);
 
@@ -128,6 +131,12 @@ export class ComelitApp {
     this.memory = undefined;
     /** area -> { mode, until }: what the last Gladys command asked. */
     this.commanded = new Map();
+    /** The area read the arms arriving together share, while it is pending. */
+    this.armRead = undefined;
+    /** The disarms waiting their turn: an arm of their area withdraws them. */
+    this.disarmTickets = new Set();
+    /** area -> when a disarm was last written (its outcome may not be seen yet). */
+    this.disarmSentAt = new Map();
     /** shutter -> { from, until }: a stop sent, not seen yet. */
     this.stopGuards = new Map();
     /** door -> until: a door opened from Gladys. */
@@ -400,6 +409,7 @@ export class ComelitApp {
     for (const timer of this.readBacks) this.timers.clearTimeout(timer);
     this.readBacks.clear();
     this.pendingReadBacks.clear();
+    this.armRead = undefined;
   }
 
   configProblem() {
@@ -984,9 +994,8 @@ export class ComelitApp {
    * read in time. The read is withdrawn at sendBy if it is still waiting for
    * the line, so the refusal comes within Gladys' 5 s.
    */
-  async fresh(client, read, asked) {
+  async fresh(client, read, asked, { sendBy = asked + this.timings.sendBy } = {}) {
     if (!client.connected) throw this.refused(T.offline);
-    const sendBy = asked + this.timings.sendBy;
     const left = sendBy - this.now();
     if (left < 200) throw this.refused(T.tooLate);
     const ticket = {};
@@ -1027,22 +1036,33 @@ export class ComelitApp {
     what,
     asked,
     run,
-    { client, command, onSent = () => {}, readBack, confirm, vedo = false, deferConfirm = false },
+    {
+      client,
+      command,
+      onSent = () => {},
+      readBack,
+      confirm,
+      vedo = false,
+      deferConfirm = false,
+      sendBy = asked + this.timings.sendBy,
+      withdrawn = () => false,
+    },
   ) {
     const label = word(what, 'en');
-    if (this.now() > asked + this.timings.sendBy) {
+    if (this.now() > sendBy) {
       this.logger.warn(`Command NOT sent (${label}): too late`);
       throw this.refused(T.tooLate);
     }
     // The configuration may have changed while the command waited its turn.
     if (command) this.checkAllowed(command, what);
+    if (withdrawn()) throw this.refused(T.disarmWithdrawn);
     const ticket = {};
     // …and once more right before the socket write.
     const request = run({
-      sendBy: asked + this.timings.sendBy,
+      sendBy,
       ticket,
       timeout: Math.max(500, asked + this.timings.answerBy - this.now()),
-      check: command ? () => this.isAllowed(command) : undefined,
+      check: () => (command ? this.isAllowed(command) : true) && !withdrawn(),
     });
     let timer;
     const late = new Promise((resolve) => {
@@ -1058,6 +1078,7 @@ export class ComelitApp {
       if (err instanceof ComelitError && !err.sent) {
         this.logger.warn(`Command NOT sent (${label}): ${err.message}`);
         if (err.kind === 'withdrawn' && command) this.checkAllowed(command, what);
+        if (err.kind === 'withdrawn' && withdrawn()) throw this.refused(T.disarmWithdrawn);
         throw this.refused(err.kind === 'late' ? T.tooLate : T.offline);
       }
       this.logger.warn(`Command sent, NOT confirmed (${label}): ${err.message}`);
@@ -1354,102 +1375,212 @@ export class ComelitApp {
     return client;
   }
 
+  /**
+   * An arming, protective: never behind an option, a disarm, a confirmation
+   * read or a poll (its requests go first in the alarm's line), never blocked
+   * by an unreadable state when it cannot lower the protection, written up to
+   * armSendBy after it was asked. The arms arriving together share one area
+   * read. An arm withdraws the disarms of its area still waiting. What still
+   * refuses it (nothing sent): the alarm unreachable, an unknown area or an
+   * absent P1/P2, a delay running, the area armed in another, weaker mode, an
+   * alarm in progress, a partial arm on an unreadable state when the last
+   * state known protects as much, a disarm just written and not seen yet
+   * (partial arms only), its time run out (the line stayed busy).
+   */
   async arm(index, mode, asked = this.now()) {
     if (!ARM_ACTIONS[mode]) throw new Error(`Unknown arming mode ${mode}`);
     const what = fill(COMMAND_NAMES[mode], index + 1);
+    const label = word(what, 'en');
+    const level = PROTECTION[mode];
     const area = this.vedoArea(index);
     if (mode === 'armed_p1' && !area.p1) {
       throw this.refused(fill(T.unknownObject, `P1 ${index + 1}`));
     }
     if (mode === 'armed_p12' && !area.p2)
       throw this.refused(fill(T.unknownObject, `P2 ${index + 1}`));
-    // The queue of the alarm is freed once the request is sent: the
-    // confirmation reads run after it, never holding the next command.
-    const finish = await this.serial('vedo', async () => {
-      const client = this.alarmReady();
-      const read = await this.fresh(client, (options) => client.readAreas(options), asked);
-      const status = read.get(index);
+    this.withdrawDisarms(index, label);
+    const client = this.alarmReady();
+    const sendBy = asked + this.timings.armSendBy;
+    let status;
+    try {
+      status = (await this.armStatuses(client, asked, sendBy)).get(index);
       if (!status || status.mode === undefined) throw this.refused(T.stateUnknown);
-      if (status.mode === mode) {
-        this.logger.info(`Area ${index + 1} already ${mode}: nothing sent`);
+    } catch (err) {
+      if (!(err instanceof Refused)) throw err;
+      if (!client.connected || !this.vedoOnline) throw this.refused(T.vedoOffline);
+      // Unreadable. An arm total never lowers anything: sent anyway. A partial
+      // arm goes only when the last state known protects less.
+      const known = this.model.vedo?.areas.get(index)?.status;
+      if (level < PROTECTION.armed_total && !(known?.level !== undefined && known.level < level)) {
+        this.logger.warn(`Arm REFUSED (${label}): the state could not be read (${err.message})`);
+        throw this.refused(T.armStateUnknown);
+      }
+      this.logger.warn(`Arm (${label}): the state could not be read (${err.message}); sent anyway`);
+      status = undefined;
+    }
+    if (status && status.level > 0 && this.disarmUncertain(index)) {
+      // A disarm just left: the state read may predate its effect. An arm
+      // total goes (it lowers nothing); a partial one would be a lowering.
+      if (level < PROTECTION.armed_total) {
+        this.logger.warn(`Arm REFUSED (${label}): a disarm just left, state uncertain`);
+        throw this.refused(T.afterDisarm);
+      }
+      status = undefined;
+    }
+    if (status) {
+      if (status.level >= level) {
+        // Already as protected (or more): never an arm that lowers.
+        this.logger.info(`Area ${index + 1} already ${status.mode} (${label}): nothing sent`);
         return;
       }
       if (status.exitDelay || status.entryDelay) {
-        this.logger.warn(`Arm REFUSED (${word(what, 'en')}): a delay is running`);
+        this.logger.warn(`Arm REFUSED (${label}): a delay is running`);
         throw this.refused(T.delayInProgress);
       }
-      if (status.mode !== 'disarmed') {
-        this.logger.warn(`Arm REFUSED (${word(what, 'en')}): area ${index + 1} is ${status.mode}`);
+      if (status.level > 0) {
+        this.logger.warn(`Arm REFUSED (${label}): area ${index + 1} is ${status.mode}`);
         throw this.refused(T.otherMode);
       }
       if (status.alarm) {
-        this.logger.warn(`Arm REFUSED (${word(what, 'en')}): alarm in progress`);
+        this.logger.warn(`Arm REFUSED (${label}): alarm in progress`);
         throw this.refused(T.alarmInProgress);
       }
-      this.logger.info(`ARMING from Gladys: ${word(what, 'en')}`);
-      return this.send(
-        what,
-        asked,
-        (options) => client.vedoAction(ARM_ACTIONS[mode], index, options),
-        {
-          client,
-          command: 'arm',
-          vedo: true,
-          deferConfirm: true,
-          onSent: () =>
-            this.commanded.set(index, { mode, until: this.now() + this.timings.commandMemory }),
-          confirm: async (options) => {
-            const now = (await client.readAreas(options)).get(index);
-            return changed(status, now) && (now.mode === mode || now.exitDelay);
-          },
-          readBack: keyed(`vedo:${client.kind}`, () => client.readAreas()),
+    }
+    const before = status ?? { level: undefined };
+    this.logger.info(`ARMING from Gladys: ${label}`);
+    const finish = await this.send(
+      what,
+      asked,
+      (options) =>
+        client.vedoAction(ARM_ACTIONS[mode], index, { ...options, priority: 'protective' }),
+      {
+        client,
+        vedo: true,
+        deferConfirm: true,
+        sendBy,
+        onSent: () =>
+          this.commanded.set(index, { mode, until: this.now() + this.timings.commandMemory }),
+        confirm: async (options) => {
+          const now = (await client.readAreas(options)).get(index);
+          return (
+            Boolean(now) &&
+            (before.level === undefined || changed(before, now)) &&
+            (now.mode === mode || Boolean(now.exitDelay))
+          );
         },
-      );
-    });
+        readBack: keyed(`vedo:${client.kind}`, () => client.readAreas()),
+      },
+    );
     if (finish) await finish();
+  }
+
+  /**
+   * The area statuses for an arm asked at `asked`: the arms arriving together
+   * share the read still pending (queued or on its way); else a read of their
+   * own, ahead of everything else waiting on the line.
+   */
+  armStatuses(client, asked, sendBy) {
+    const pending = this.armRead;
+    if (pending && pending.client === client && pending.generation === client.generation) {
+      return pending.promise;
+    }
+    const promise = this.fresh(
+      client,
+      (options) => client.readAreas({ ...options, priority: 'protective' }),
+      asked,
+      { sendBy },
+    );
+    const entry = { client, generation: client.generation, promise };
+    this.armRead = entry;
+    const done = () => {
+      if (this.armRead === entry) this.armRead = undefined;
+    };
+    promise.then(done, done);
+    return promise;
+  }
+
+  /** A disarm written less than answerBy ago: its effect may not show in a read yet. */
+  disarmUncertain(index) {
+    const at = this.disarmSentAt.get(index);
+    return at !== undefined && this.now() - at < this.timings.answerBy;
+  }
+
+  /** The disarms of an area still waiting their turn are withdrawn (nothing sent). */
+  withdrawDisarms(index, label) {
+    for (const ticket of this.disarmTickets) {
+      if (ticket.index === index && !ticket.withdrawn) {
+        ticket.withdrawn = true;
+        this.logger.warn(`Disarm of area ${index + 1} WITHDRAWN: ${label} was asked meanwhile`);
+      }
+    }
   }
 
   async disarm(index, asked = this.now()) {
     const what = fill(COMMAND_NAMES.disarm, index + 1);
     this.checkAllowed('disarm', what);
     this.vedoArea(index);
-    // As arm(): the confirmation runs once the queue of the alarm is freed.
-    const finish = await this.serial('vedo', async () => {
-      this.checkAllowed('disarm', what);
-      const client = this.alarmReady();
-      const read = await this.fresh(client, (options) => client.readAreas(options), asked);
-      const status = read.get(index);
-      if (!status || status.mode === undefined) throw this.refused(T.stateUnknown);
-      if (status.mode === 'disarmed' && !status.alarm && !status.exitDelay && !status.entryDelay) {
-        this.logger.info(`Area ${index + 1} already disarmed: nothing sent`);
-        return;
-      }
-      this.checkAllowed('disarm', what);
-      this.logger.info(`DISARMING from Gladys: ${word(what, 'en')}`);
-      return this.send(what, asked, (options) => client.vedoAction(DISARM_ACTION, index, options), {
-        client,
-        command: 'disarm',
-        vedo: true,
-        deferConfirm: true,
-        onSent: () =>
-          this.commanded.set(index, {
-            mode: 'disarmed',
-            until: this.now() + this.timings.commandMemory,
-          }),
-        confirm: async (options) => {
-          const now = (await client.readAreas(options)).get(index);
-          return (
-            changed(status, now) &&
-            now.mode === 'disarmed' &&
-            !now.alarm &&
-            !now.entryDelay &&
-            !now.exitDelay
-          );
-        },
-        readBack: keyed(`vedo:${client.kind}`, () => client.readAreas()),
+    const ticket = { index, withdrawn: false };
+    this.disarmTickets.add(ticket);
+    const withdrawn = () => ticket.withdrawn;
+    const checkWithdrawn = () => {
+      if (ticket.withdrawn) throw this.refused(T.disarmWithdrawn);
+    };
+    try {
+      // The confirmation runs once the queue of the alarm is freed.
+      const finish = await this.serial('vedo', async () => {
+        this.checkAllowed('disarm', what);
+        checkWithdrawn();
+        const client = this.alarmReady();
+        const read = await this.fresh(client, (options) => client.readAreas(options), asked);
+        const status = read.get(index);
+        if (!status || status.mode === undefined) throw this.refused(T.stateUnknown);
+        if (
+          status.mode === 'disarmed' &&
+          !status.alarm &&
+          !status.exitDelay &&
+          !status.entryDelay
+        ) {
+          this.logger.info(`Area ${index + 1} already disarmed: nothing sent`);
+          return;
+        }
+        this.checkAllowed('disarm', what);
+        checkWithdrawn();
+        this.logger.info(`DISARMING from Gladys: ${word(what, 'en')}`);
+        return this.send(
+          what,
+          asked,
+          (options) => client.vedoAction(DISARM_ACTION, index, options),
+          {
+            client,
+            command: 'disarm',
+            vedo: true,
+            deferConfirm: true,
+            withdrawn,
+            onSent: () => {
+              this.disarmSentAt.set(index, this.now());
+              this.commanded.set(index, {
+                mode: 'disarmed',
+                until: this.now() + this.timings.commandMemory,
+              });
+            },
+            confirm: async (options) => {
+              const now = (await client.readAreas(options)).get(index);
+              return (
+                changed(status, now) &&
+                now.mode === 'disarmed' &&
+                !now.alarm &&
+                !now.entryDelay &&
+                !now.exitDelay
+              );
+            },
+            readBack: keyed(`vedo:${client.kind}`, () => client.readAreas()),
+          },
+        );
       });
-    });
-    if (finish) await finish();
+      if (finish) await finish();
+    } finally {
+      this.disarmTickets.delete(ticket);
+    }
   }
 
   /**

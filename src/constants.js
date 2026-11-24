@@ -110,6 +110,13 @@ export const TIMINGS = {
    */
   sendBy: 3_500,
   answerBy: 4_500,
+  /**
+   * An arming (protective) may be written up to this long after it was
+   * asked: three areas armed together on a slow Vedo (one request at a time,
+   * 250 ms apart) are all written; a write past answerBy - 200 is "sent,
+   * without confirmation" at once.
+   */
+  armSendBy: 4_300,
   /** The fresh read before a command, at most. */
   readBefore: 1_500,
   /** After an alarm command, its state is read this often until answerBy. */

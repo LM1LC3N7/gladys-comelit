@@ -133,7 +133,13 @@ up to date at the end of every milestone.
   alarm running; already in the mode asked: nothing sent; disarming sends
   unless disarmed with nothing running. Never forced (`force=0`); HA passes
   the anomaly flag as `force`, here an area the Vedo will not arm stays
-  disarmed. Arming and disarming are two options, both off by default.
+  disarmed. Arming needs no option (2026-11-24, wave 16 r1): it is
+  protective, goes first on the alarm's line (`priority: 'protective'`),
+  the arms arriving together share one area read, an arm total leaves even
+  on an unreadable state, a partial arm only when the last state known
+  protects less, an arm withdraws the disarms of its area still waiting, and
+  it may be written up to `armSendBy` (4.3 s). Disarming is an option, off
+  by default.
 - **Shutters**: open / close are absolute but decided on a fresh read:
   moving the other way is refused (the bridge would only stop it). Stop sends
   the reverse of the movement read (Home Assistant's way); a guard (with its

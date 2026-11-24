@@ -80,8 +80,22 @@ included), waits for the connections and tells what was found.
 
 ## Safety
 
-- **Arming is always allowed** (it protects); **disarming is off by default**.
-  Once "Allow disarming" is checked, **every Gladys user, every scene and the
+- **Arming is always allowed** (it protects). Arming while someone is inside
+  (a scene, a mistake) may raise a false alarm, the sirens and a call of your
+  alarm monitoring company. An arm never lowers the protection (arm P1 on an
+  area armed total sends nothing) and is never forced. It goes ahead of the
+  confirmation reads, the polls and a disarm waiting on the line; the arms
+  of a scene ("arm everything") share one state read and all leave, on a
+  slow Vedo too; an arm total leaves even when the area state cannot be read;
+  an arm withdraws a disarm of its area still waiting. Arming is still
+  refused, nothing sent, in these cases only: the alarm unreachable; an
+  unknown area, or P1 / P2 absent on it; an entry or exit delay running; the
+  area armed in another, weaker mode (the Vedo arms a disarmed area; disarm it
+  first); an alarm in progress; an arm P1 or P1 + P2 whose state cannot be
+  read when the last state known protects as much, or just after a disarm
+  whose effect is not seen yet; its time run out (the line stayed busy for
+  more than 4.3 s).
+- **Disarming is off by default**. Once "Allow disarming" is checked, **every Gladys user, every scene and the
   Gladys mobile app can disarm without typing any code**: the PIN of the
   configuration is enough. Allow it only if your Gladys is well protected.
   Disarming also silences an alarm in progress.
@@ -93,11 +107,11 @@ included), waits for the connections and tells what was found.
   switched off while a command waits its turn stops that command.
 - Before each alarm, thermostat or shutter-stop command, the integration
   **reads the state from the bridge again** and decides on it, never on what
-  it has in memory. Commands go one at a time.
+  it has in memory. Commands go one at a time, the arms first.
 - Arming is never forced: an area the Vedo will not arm as it is (open zone,
   anomaly) stays disarmed.
-- A command that cannot leave in time (slow bridge, unreadable state) is
-  refused with "nothing was sent". A command that left without a clear answer
+- A command other than an arming that cannot leave in time (slow bridge,
+  unreadable state) is refused with "nothing was sent". A command that left without a clear answer
   (no answer, unexpected answer) is reported "sent, without confirmation"
   and the state is read again: it is never reported "not sent". Only a clear
   refusal of the bridge (HTTP 4xx) is reported "refused".

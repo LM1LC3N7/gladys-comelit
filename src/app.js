@@ -55,9 +55,8 @@ import { fileStore, normalizeMemory } from './store.js';
 /** A command refused before anything was sent. */
 export class Refused extends Error {}
 
-/** Command -> [config flag, refusal message, log name]. */
+/** Option-guarded command -> [config flag, refusal message, log name]. Arming has none. */
 const OPTIONS = {
-  arm: ['allowArm', T.armRefused, 'Arm'],
   disarm: ['allowDisarm', T.disarmRefused, 'Disarm'],
   setpoint: ['allowSetpoint', T.setpointRefused, 'Setpoint'],
   door: ['allowDoor', T.doorRefused, 'Door'],
@@ -429,10 +428,10 @@ export class ComelitApp {
     await this.publishTransports();
   }
 
-  /** The four command options of `next`, into the configuration in use, synchronously. */
+  /** The three command options of `next`, into the configuration in use, synchronously. */
   applyOptions(next) {
     const options = {};
-    for (const key of ['allowSetpoint', 'allowArm', 'allowDisarm', 'allowDoor']) {
+    for (const key of ['allowSetpoint', 'allowDisarm', 'allowDoor']) {
       options[key] = next[key];
     }
     this.config = { ...this.config, ...options };
@@ -966,8 +965,10 @@ export class ComelitApp {
     throw new Error(`${feature?.external_id} is read-only`);
   }
 
+  /** Arming has no option: it is always allowed. */
   isAllowed(command) {
-    return Boolean(this.config[OPTIONS[command][0]]);
+    const option = OPTIONS[command];
+    return !option || Boolean(this.config[option[0]]);
   }
 
   /** The option of a command, read again now; refused (nothing sent) once switched off. */
@@ -1356,7 +1357,6 @@ export class ComelitApp {
   async arm(index, mode, asked = this.now()) {
     if (!ARM_ACTIONS[mode]) throw new Error(`Unknown arming mode ${mode}`);
     const what = fill(COMMAND_NAMES[mode], index + 1);
-    this.checkAllowed('arm', what);
     const area = this.vedoArea(index);
     if (mode === 'armed_p1' && !area.p1) {
       throw this.refused(fill(T.unknownObject, `P1 ${index + 1}`));
@@ -1366,7 +1366,6 @@ export class ComelitApp {
     // The queue of the alarm is freed once the request is sent: the
     // confirmation reads run after it, never holding the next command.
     const finish = await this.serial('vedo', async () => {
-      this.checkAllowed('arm', what);
       const client = this.alarmReady();
       const read = await this.fresh(client, (options) => client.readAreas(options), asked);
       const status = read.get(index);
@@ -1387,7 +1386,6 @@ export class ComelitApp {
         this.logger.warn(`Arm REFUSED (${word(what, 'en')}): alarm in progress`);
         throw this.refused(T.alarmInProgress);
       }
-      this.checkAllowed('arm', what);
       this.logger.info(`ARMING from Gladys: ${word(what, 'en')}`);
       return this.send(
         what,

@@ -175,7 +175,8 @@ up to date at the end of every milestone.
 
 - **A (blocking) - "Test the connection" and the options**: `configUpdated`
   keeps the raw configuration in both branches and applies the four options
-  (`allow_setpoint`, `allow_arm`, `allow_disarm`, `allow_door`) to the
+  (`allow_setpoint`, `allow_disarm`, `allow_door`; `allow_arm` dropped on
+  2026-11-24: arming is always allowed) to the
   configuration in use before anything is awaited; "Test the connection"
   always reads `gladys.getConfig()` again and restarts with it. An option
   switched off stays off across the button.

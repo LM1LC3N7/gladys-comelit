@@ -171,10 +171,7 @@ test('the configuration: defaults, secrets checked, the alarm source, the stop k
   assert.equal(config.bridgePin, '1234');
   assert.equal(config.vedoPin, '');
   assert.deepEqual(config.invalid, ['vedo_pin']);
-  assert.equal(
-    config.allowArm || config.allowDisarm || config.allowDoor || config.allowSetpoint,
-    false,
-  );
+  assert.equal(config.allowDisarm || config.allowDoor || config.allowSetpoint, false);
   assert.equal(config.pollInterval, 10_000);
   assert.equal(vedoSource(config), 'none');
   assert.equal(vedoSource(normalizeConfig({ host: 'a', vedo_pin: '1' })), 'bridge');

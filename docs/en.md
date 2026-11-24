@@ -80,7 +80,7 @@ included), waits for the connections and tells what was found.
 
 ## Safety
 
-- **Arming is off by default**, **so is disarming**: two separate options.
+- **Arming is always allowed** (it protects); **disarming is off by default**.
   Once "Allow disarming" is checked, **every Gladys user, every scene and the
   Gladys mobile app can disarm without typing any code**: the PIN of the
   configuration is enough. Allow it only if your Gladys is well protected.

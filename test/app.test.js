@@ -5,6 +5,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createFakeGladys } from '@gladysassistant/integration-sdk/testing';
+import { assertCoreDevice } from './helpers/coreFeature.js';
 import { ComelitApp } from '../src/app.js';
 import { TIMINGS } from '../src/constants.js';
 import { registerHandlers } from '../src/handlers.js';
@@ -117,6 +118,10 @@ test('start: devices, categories, states, status', async (t) => {
     ],
     'the dehumidifier only is left out',
   );
+  // Every feature of every device kind follows the core model (min, max, flags).
+  let features = 0;
+  for (const device of devices) features += assertCoreDevice(device, device.external_id);
+  assert.ok(features >= devices.length, 'every device has features');
   const categories = (d) => d.features.map((f) => `${f.category}/${f.type}`);
   assert.deepEqual(categories(ctx.device(ids('light', 0).device)), ['light/binary']);
   assert.deepEqual(categories(ctx.device(ids('plug', 0).device)), ['switch/binary']);
@@ -229,29 +234,26 @@ test('setpoint: off by default, then decided on the thermostat read now', async 
   assert.equal(commands(ctx).length, 1);
 });
 
-test('alarm: arming and disarming are both off by default, nothing sent', async (t) => {
+test('alarm: disarming is off by default, nothing sent; arming never needs an option', async (t) => {
   const ctx = await setup(t);
   await up(ctx);
+  assert.equal(ctx.app.config.allowDisarm, false);
   const reads = () => ctx.fake.log.filter((l) => l.includes('area_stat')).length;
   const before = reads();
-  for (const key of ['arm-total', 'arm-p1', 'arm-p12', 'disarm']) {
-    const ack = await ctx.set('area', 0, key, 1);
-    assert.equal(ack.success, false, key);
-    assert.match(ack.error, /disabled in the configuration/);
-  }
+  const disarm = await ctx.set('area', 0, 'disarm', 1);
+  assert.equal(disarm.success, false);
+  assert.match(disarm.error, /Disarming is disabled in the configuration/);
   assert.equal(commands(ctx).length, 0);
   assert.equal(reads(), before, 'not even read');
-  // Allowing arming does not allow disarming.
-  await ctx.config({ allow_arm: true });
-  await up(ctx);
+  // Arming protects: it goes with every option off.
   assert.equal((await ctx.set('area', 0, 'arm-total', 1)).success, true);
-  const disarm = await ctx.set('area', 0, 'disarm', 1);
-  assert.match(disarm.error, /Disarming is disabled/);
+  const again = await ctx.set('area', 0, 'disarm', 1);
+  assert.match(again.error, /Disarming is disabled/);
   assert.deepEqual(commands(ctx), ['GET user/action.cgi?vedo=1&tot=0&force=0']);
 });
 
 test('arm: decided on the area read now, once, credited to Gladys; buttons only', async (t) => {
-  const ctx = await setup(t, { config: { allow_arm: true, allow_disarm: true } });
+  const ctx = await setup(t, { config: { allow_disarm: true } });
   await up(ctx);
   const before = ctx.fake.log.length;
   assert.equal((await ctx.set('area', 0, 'arm-p1', 1)).success, true);
@@ -383,37 +385,38 @@ test('scene event data: undefined becomes null for every event, other values kep
 });
 
 test('an option switched off while the command waits is refused, nothing sent', async (t) => {
-  const ctx = await setup(t, { config: { allow_arm: true } });
+  const ctx = await setup(t, { config: { allow_disarm: true } });
   await up(ctx);
+  ctx.fake.areas.armed[0] = 4;
   ctx.fake.hook = async (entry) => {
     if (entry.path.includes('area_stat')) {
       ctx.fake.hook = undefined;
       // Switched off while the fresh read is on its way.
-      ctx.app.config = { ...ctx.app.config, allowArm: false };
+      ctx.app.config = { ...ctx.app.config, allowDisarm: false };
     }
     return undefined;
   };
-  const ack = await ctx.set('area', 0, 'arm-total', 1);
+  const ack = await ctx.set('area', 0, 'disarm', 1);
   assert.equal(ack.success, false);
-  assert.match(ack.error, /Arming is disabled/);
+  assert.match(ack.error, /Disarming is disabled/);
   assert.equal(commands(ctx).length, 0);
   // And right before the write (after the queue): the transport is vetoed.
-  ctx.app.config = { ...ctx.app.config, allowArm: true };
+  ctx.app.config = { ...ctx.app.config, allowDisarm: true };
   ctx.fake.hook = async (entry) => {
     if (entry.path.includes('action.cgi')) {
       ctx.fake.hook = undefined;
-      ctx.app.config = { ...ctx.app.config, allowArm: false };
+      ctx.app.config = { ...ctx.app.config, allowDisarm: false };
       return { veto: true };
     }
     return undefined;
   };
-  const late = await ctx.set('area', 0, 'arm-total', 1);
-  assert.match(late.error, /Arming is disabled/);
+  const late = await ctx.set('area', 0, 'disarm', 1);
+  assert.match(late.error, /Disarming is disabled/);
   assert.equal(commands(ctx).length, 0);
 });
 
 test('no clear answer: "sent, without confirmation", never "not sent"', async (t) => {
-  const ctx = await setup(t, { config: { allow_arm: true } });
+  const ctx = await setup(t);
   await up(ctx);
   ctx.fake.hook = async (entry, req) => {
     if (!entry.path.includes('action.cgi')) return undefined;
@@ -437,7 +440,6 @@ test('no clear answer: "sent, without confirmation", never "not sent"', async (t
 
 test('new Vedo firmware: actions by POST, its 404 confirmed by the state read', async (t) => {
   const ctx = await setup(t, {
-    config: { allow_arm: true },
     bridge: new FakeBridge({ newFirmware: true }),
   });
   await up(ctx);
@@ -458,7 +460,7 @@ test('new Vedo firmware: actions by POST, its 404 confirmed by the state read', 
 });
 
 test('acks never wait for the publication to Gladys', async (t) => {
-  const ctx = await setup(t, { config: { allow_arm: true } });
+  const ctx = await setup(t);
   await up(ctx);
   ctx.gladys.publishStates = () => new Promise(() => {});
   ctx.gladys.publishSceneEvent = () => new Promise(() => {});
@@ -687,10 +689,10 @@ test('a Vedo IP of its own: its own session, its own link device', async (t) => 
 });
 
 test('"Test the connection" never brings back an option switched off', async (t) => {
-  const ctx = await setup(t, { config: { allow_arm: true } });
+  const ctx = await setup(t, { config: { allow_disarm: true } });
   await up(ctx);
-  await ctx.gladys.fake.configUpdated({ ...BASE, allow_arm: false });
-  assert.equal(ctx.app.config.allowArm, false, 'applied at once');
+  await ctx.gladys.fake.configUpdated({ ...BASE, allow_disarm: false });
+  assert.equal(ctx.app.config.allowDisarm, false, 'applied at once');
   // The bridge is cut: the button restarts the session.
   ctx.fake.hook = async () => ({
     error: Object.assign(new Error('cut'), { kind: 'offline', sent: false }),
@@ -700,10 +702,11 @@ test('"Test the connection" never brings back an option switched off', async (t)
   ctx.fake.hook = undefined;
   const result = await ctx.gladys.fake.action('test_connection');
   assert.equal(result.success, true, result.error);
-  assert.equal(ctx.app.config.allowArm, false, 'still off after the restart');
+  assert.equal(ctx.app.config.allowDisarm, false, 'still off after the restart');
   await up(ctx);
-  const ack = await ctx.set('area', 0, 'arm-total', 1);
-  assert.match(ack.error, /Arming is disabled/);
+  ctx.fake.areas.armed[0] = 4;
+  const ack = await ctx.set('area', 0, 'disarm', 1);
+  assert.match(ack.error, /Disarming is disabled/);
   assert.equal(commands(ctx).length, 0);
 });
 
@@ -767,14 +770,14 @@ test('S: "stop everything" while a shutter reaches its end: no reverse command',
 });
 
 test('A3: a start queued behind a newer save uses the newer configuration', async (t) => {
-  const ctx = await setup(t, { config: { allow_arm: false } });
+  const ctx = await setup(t, { config: { allow_disarm: false } });
   await up(ctx);
-  const first = ctx.app.configUpdated({ ...BASE, allow_arm: true, poll_interval: 20 });
-  const second = ctx.app.configUpdated({ ...BASE, allow_arm: false });
+  const first = ctx.app.configUpdated({ ...BASE, allow_disarm: true, poll_interval: 20 });
+  const second = ctx.app.configUpdated({ ...BASE, allow_disarm: false });
   await Promise.all([first, second]);
   await ctx.app.starting;
-  assert.equal(ctx.app.config.allowArm, false);
-  assert.equal(ctx.app.rawConfig.allow_arm, false);
+  assert.equal(ctx.app.config.allowDisarm, false);
+  assert.equal(ctx.app.rawConfig.allow_disarm, false);
 });
 
 test('"Test the connection" never starts on an empty configuration', async (t) => {
@@ -788,7 +791,7 @@ test('"Test the connection" never starts on an empty configuration', async (t) =
   assert.equal(ctx.gladys.fake.connectionStatus.connected, true, 'the status is not touched');
 });
 test('alarm: a 200 alone, or a state read that did not change, is no confirmation', async (t) => {
-  const ctx = await setup(t, { config: { allow_arm: true, allow_disarm: true } });
+  const ctx = await setup(t, { config: { allow_disarm: true } });
   await up(ctx);
   // Older firmware: 200, but the Vedo did nothing.
   ctx.fake.hook = async (entry) =>
@@ -891,7 +894,7 @@ test('"close everything" then "turn everything off" on a slow bridge: every comm
 
 test('the alarm queue is free once a command is sent: its confirmation never delays the next', async (t) => {
   const timings = { ...FAST, sendBy: 1_000, answerBy: 1_500, confirmEvery: 200 };
-  const ctx = await setup(t, { config: { allow_arm: true, allow_disarm: true }, timings });
+  const ctx = await setup(t, { config: { allow_disarm: true }, timings });
   await up(ctx);
   // Area 1: the Vedo answers but never shows the arming (confirmation runs to the end).
   ctx.fake.hook = async (entry) =>

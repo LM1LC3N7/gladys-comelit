@@ -191,10 +191,6 @@ export const T = {
     fr: "Arrêt précédent pas encore vu sur le pont : rien n'a été envoyé",
     en: 'The previous stop is not seen on the bridge yet: nothing was sent',
   },
-  armRefused: {
-    fr: "Armement désactivé dans la configuration : rien n'a été envoyé",
-    en: 'Arming is disabled in the configuration: nothing was sent',
-  },
   disarmRefused: {
     fr: "Désarmement désactivé dans la configuration : rien n'a été envoyé",
     en: 'Disarming is disabled in the configuration: nothing was sent',

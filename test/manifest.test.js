@@ -112,7 +112,7 @@ test('the configuration matches the code; every risky command is off by default'
     assert.ok(fields[key], `${key} is not in the config_schema`);
     assert.deepEqual(fields[key].default, value, key);
   }
-  for (const key of ['allow_setpoint', 'allow_arm', 'allow_disarm', 'allow_door']) {
+  for (const key of ['allow_setpoint', 'allow_disarm', 'allow_door']) {
     assert.equal(fields[key].type, 'boolean');
     assert.equal(fields[key].default, false, `${key} is opt-in`);
   }

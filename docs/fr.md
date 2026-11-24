@@ -86,8 +86,8 @@ compris), attend les connexions et indique ce qui a été trouvé.
 
 ## Sécurité
 
-- **Armer est désactivé par défaut**, **désarmer aussi** : deux options
-  séparées. Une fois « Autoriser le désarmement » cochée, **tout utilisateur
+- **Armer est toujours autorisé** (c'est protecteur) ; **désarmer est
+  désactivé par défaut**. Une fois « Autoriser le désarmement » cochée, **tout utilisateur
   de Gladys, toute scène et l'application mobile Gladys peuvent désarmer sans
   taper de code** : le code de la configuration suffit. Ne l'autorisez que si
   votre Gladys est bien protégé. Désarmer coupe aussi une alarme en cours.

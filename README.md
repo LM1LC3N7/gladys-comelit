@@ -13,8 +13,8 @@ the **Vedo** alarm (through the bridge or a Vedo IP) and, optionally, the
 - Thermostats: temperature and setpoint; **setting the setpoint is off by
   default**.
 - Vedo areas: state, alarm, tamper; arm total, arm partial P1, arm partial
-  P1 + P2 and disarm **buttons**; **arming and disarming are two options,
-  both off by default**. Zones: open or closed (or motion, smoke, leak),
+  P1 + P2 and disarm **buttons**; **arming is always allowed, disarming is
+  an option, off by default**. Zones: open or closed (or motion, smoke, leak),
   alarm, excluded, tamper.
 - Intercom doors: an "Open" **button** per door; **off by default** (read the
   warning in the guide).

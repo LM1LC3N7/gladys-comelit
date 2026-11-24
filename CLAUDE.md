@@ -8,14 +8,15 @@ contributors.
 A Gladys Assistant **external integration**: a Node.js service (Node 22+, ESM,
 no build step) that runs in its own sandboxed Docker container and talks to
 Gladys through
-[`@gladysassistant/integration-sdk`](https://github.com/GladysAssistant/integration-sdk-js),
+[`@gladysassistant/integration-sdk`](https://github.com/GladysAssistant/integration-sdk-js)
+(v0.16),
 its only runtime dependency. It started from the official JavaScript template.
 
 ## Commands
 
 ```bash
 npm install
-npm test                                  # node --test, the built-in runner
+npm test                                  # node --test --test-timeout=60000
 node --test test/app.test.js              # one file
 node --test --test-name-pattern "shutter" # tests whose name matches
 npm run lint                              # ESLint
@@ -51,8 +52,8 @@ test/                             node --test, the SDK's fake Gladys + test/help
 ```
 
 Safety rules of this integration (see TODO.md "Decisions"): setting a
-thermostat, arming, disarming and opening a door stay off by default, each
-option checked again right before the write; alarm and door commands are
+thermostat, disarming and opening a door stay off by default, each option
+checked again right before the write (arming is always allowed); alarm and door commands are
 push buttons, never switches; shutters are `shutter`, never switches; a
 command decides on the state read from the bridge just before it, one at a
 time per host; a command that may have left is never reported "not sent";
@@ -62,6 +63,14 @@ for a publication; the PINs and the token are never logged nor written to
 
 ## Rules
 
+- **Features follow the core model.** Every feature has a non-empty `name`, a
+  numeric `min` and `max` (0/0 for text), boolean `read_only` and
+  `has_feedback`: Gladys refuses it otherwise, and the SDK's fake Gladys
+  (0.16.1) too; `test/helpers/coreFeature.js` checks every device of the
+  discovery test (bridge, lights, plug, shutter, thermostat, areas, zones,
+  doors).
+  Devices carry `should_poll: false` (Gladys 5.3 polls a device with
+  `poll_frequency` unless it says so).
 - **External ids are forever.** Build them with
   `gladys.externalIds(type, platformId)`, `platformId` being the unique id the
   platform gives the device (serial, cloud id, MAC), never a label. Gladys keys

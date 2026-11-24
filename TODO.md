@@ -245,3 +245,11 @@ up to date at the end of every milestone.
   with a status, nothing started, the running sessions kept.
 - **arm()**: `armed_p1` refused on an area without P1, as `armed_p12` without
   P2.
+
+## Next patch
+
+- Review w16 r4 minors (`_lots/migration-reviews/w16-gladys-comelit-r4.md`): the delay/alarm refusal messages do not say the refusal is temporary; on a busy 700 ms bridge a scene's "lights off" and "shutter close" can still be refused (bridge command queue: dedicated patch).
+
+## Next patch
+
+- Migration review minors: see `_lots/migration-reviews/w16-gladys-comelit-r4.md`.
